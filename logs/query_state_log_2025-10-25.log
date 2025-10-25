@@ -1,0 +1,54 @@
+2025-10-25 22:26:13,652 - QueryStateLogger - ERROR - Unable to connect to database. Error: connection to server at "ep-odd-bread-adtrchzl-pooler.c-2.us-east-1.aws.neon.tech" (54.156.15.30), port 5432 failed: ERROR:  connection is insecure (try using `sslmode=require`)
+
+2025-10-25 22:26:14,250 - QueryStateLogger - ERROR - Unable to connect to database. Error: connection to server at "ep-odd-bread-adtrchzl-pooler.c-2.us-east-1.aws.neon.tech" (54.156.15.30), port 5432 failed: ERROR:  connection is insecure (try using `sslmode=require`)
+
+2025-10-25 22:27:53,579 - QueryStateLogger - ERROR - Unable to connect to database. Error: connection to server at "ep-odd-bread-adtrchzl-pooler.c-2.us-east-1.aws.neon.tech" (44.198.216.75), port 5432 failed: ERROR:  connection is insecure (try using `sslmode=require`)
+
+2025-10-25 22:27:54,141 - QueryStateLogger - ERROR - Unable to connect to database. Error: connection to server at "ep-odd-bread-adtrchzl-pooler.c-2.us-east-1.aws.neon.tech" (44.198.216.75), port 5432 failed: ERROR:  connection is insecure (try using `sslmode=require`)
+
+2025-10-25 22:30:15,877 - QueryStateLogger - ERROR - Unable to connect to database. Error: connection to server at "ep-odd-bread-adtrchzl-pooler.c-2.us-east-1.aws.neon.tech" (54.156.15.30), port 5432 failed: ERROR:  database "xpchex" does not exist
+
+2025-10-25 22:30:30,743 - QueryStateLogger - ERROR - Unable to connect to database. Error: connection to server at "ep-odd-bread-adtrchzl-pooler.c-2.us-east-1.aws.neon.tech" (54.156.15.30), port 5432 failed: ERROR:  database "xpchex" does not exist
+
+2025-10-25 22:33:51,695 - QueryStateLogger - ERROR - Unable to connect to database. Error: connection to server at "ep-odd-bread-adtrchzl-pooler.c-2.us-east-1.aws.neon.tech" (3.218.140.61), port 5432 failed: ERROR:  password authentication failed for user 'xpchex_owner'
+
+2025-10-25 22:33:54,126 - QueryStateLogger - ERROR - Unable to connect to database. Error: connection to server at "ep-odd-bread-adtrchzl-pooler.c-2.us-east-1.aws.neon.tech" (3.218.140.61), port 5432 failed: ERROR:  password authentication failed for user 'xpchex_owner'
+
+2025-10-25 22:36:07,583 - QueryStateLogger - INFO - Successfully connected to database: xpchex as user xpchex_owner at ep-muddy-glitter-a8u7mjr5-pooler.eastus2.azure.neon.tech:5432
+2025-10-25 22:36:10,161 - QueryStateLogger - INFO - Successfully connected to database: xpchex as user xpchex_owner at ep-muddy-glitter-a8u7mjr5-pooler.eastus2.azure.neon.tech:5432
+2025-10-25 22:36:12,314 - QueryStateLogger - INFO - Successfully connected to database: xpchex as user xpchex_owner at ep-muddy-glitter-a8u7mjr5-pooler.eastus2.azure.neon.tech:5432
+2025-10-25 22:36:14,208 - QueryStateLogger - INFO - Successfully connected to database: xpchex as user xpchex_owner at ep-muddy-glitter-a8u7mjr5-pooler.eastus2.azure.neon.tech:5432
+2025-10-25 22:36:16,556 - QueryStateLogger - INFO - Successfully connected to database: xpchex as user xpchex_owner at ep-muddy-glitter-a8u7mjr5-pooler.eastus2.azure.neon.tech:5432
+2025-10-25 22:36:18,871 - QueryStateLogger - INFO - Successfully connected to database: xpchex as user xpchex_owner at ep-muddy-glitter-a8u7mjr5-pooler.eastus2.azure.neon.tech:5432
+2025-10-25 22:36:21,520 - QueryStateLogger - INFO - Successfully connected to database: xpchex as user xpchex_owner at ep-muddy-glitter-a8u7mjr5-pooler.eastus2.azure.neon.tech:5432
+2025-10-25 22:36:23,627 - QueryStateLogger - INFO - Successfully connected to database: xpchex as user xpchex_owner at ep-muddy-glitter-a8u7mjr5-pooler.eastus2.azure.neon.tech:5432
+2025-10-25 22:36:43,579 - QueryStateLogger - INFO - Successfully connected to database: xpchex as user xpchex_owner at ep-muddy-glitter-a8u7mjr5-pooler.eastus2.azure.neon.tech:5432
+2025-10-25 22:36:45,500 - QueryStateLogger - INFO - Successfully connected to database: xpchex as user xpchex_owner at ep-muddy-glitter-a8u7mjr5-pooler.eastus2.azure.neon.tech:5432
+2025-10-25 22:36:47,622 - QueryStateLogger - INFO - Successfully connected to database: xpchex as user xpchex_owner at ep-muddy-glitter-a8u7mjr5-pooler.eastus2.azure.neon.tech:5432
+2025-10-25 22:36:49,507 - QueryStateLogger - INFO - Successfully connected to database: xpchex as user xpchex_owner at ep-muddy-glitter-a8u7mjr5-pooler.eastus2.azure.neon.tech:5432
+2025-10-25 22:36:51,360 - QueryStateLogger - INFO - Successfully connected to database: xpchex as user xpchex_owner at ep-muddy-glitter-a8u7mjr5-pooler.eastus2.azure.neon.tech:5432
+2025-10-25 22:36:53,327 - QueryStateLogger - INFO - Successfully connected to database: xpchex as user xpchex_owner at ep-muddy-glitter-a8u7mjr5-pooler.eastus2.azure.neon.tech:5432
+2025-10-25 22:36:55,316 - QueryStateLogger - INFO - Successfully connected to database: xpchex as user xpchex_owner at ep-muddy-glitter-a8u7mjr5-pooler.eastus2.azure.neon.tech:5432
+2025-10-25 22:36:57,531 - QueryStateLogger - INFO - Successfully connected to database: xpchex as user xpchex_owner at ep-muddy-glitter-a8u7mjr5-pooler.eastus2.azure.neon.tech:5432
+2025-10-25 22:36:59,497 - QueryStateLogger - INFO - Successfully connected to database: xpchex as user xpchex_owner at ep-muddy-glitter-a8u7mjr5-pooler.eastus2.azure.neon.tech:5432
+2025-10-25 22:37:01,408 - QueryStateLogger - INFO - Successfully connected to database: xpchex as user xpchex_owner at ep-muddy-glitter-a8u7mjr5-pooler.eastus2.azure.neon.tech:5432
+2025-10-25 22:37:09,550 - QueryStateLogger - INFO - Successfully connected to database: xpchex as user xpchex_owner at ep-muddy-glitter-a8u7mjr5-pooler.eastus2.azure.neon.tech:5432
+2025-10-25 22:37:11,483 - QueryStateLogger - INFO - Successfully connected to database: xpchex as user xpchex_owner at ep-muddy-glitter-a8u7mjr5-pooler.eastus2.azure.neon.tech:5432
+2025-10-25 22:37:13,610 - QueryStateLogger - INFO - Successfully connected to database: xpchex as user xpchex_owner at ep-muddy-glitter-a8u7mjr5-pooler.eastus2.azure.neon.tech:5432
+2025-10-25 22:37:15,566 - QueryStateLogger - INFO - Successfully connected to database: xpchex as user xpchex_owner at ep-muddy-glitter-a8u7mjr5-pooler.eastus2.azure.neon.tech:5432
+2025-10-25 22:37:17,538 - QueryStateLogger - INFO - Successfully connected to database: xpchex as user xpchex_owner at ep-muddy-glitter-a8u7mjr5-pooler.eastus2.azure.neon.tech:5432
+2025-10-25 22:37:19,707 - QueryStateLogger - INFO - Successfully connected to database: xpchex as user xpchex_owner at ep-muddy-glitter-a8u7mjr5-pooler.eastus2.azure.neon.tech:5432
+2025-10-25 22:37:21,677 - QueryStateLogger - INFO - Successfully connected to database: xpchex as user xpchex_owner at ep-muddy-glitter-a8u7mjr5-pooler.eastus2.azure.neon.tech:5432
+2025-10-25 22:37:23,619 - QueryStateLogger - INFO - Successfully connected to database: xpchex as user xpchex_owner at ep-muddy-glitter-a8u7mjr5-pooler.eastus2.azure.neon.tech:5432
+2025-10-25 22:37:25,530 - QueryStateLogger - INFO - Successfully connected to database: xpchex as user xpchex_owner at ep-muddy-glitter-a8u7mjr5-pooler.eastus2.azure.neon.tech:5432
+2025-10-25 22:37:27,425 - QueryStateLogger - INFO - Successfully connected to database: xpchex as user xpchex_owner at ep-muddy-glitter-a8u7mjr5-pooler.eastus2.azure.neon.tech:5432
+2025-10-25 22:37:32,872 - QueryStateLogger - INFO - Successfully connected to database: xpchex as user xpchex_owner at ep-muddy-glitter-a8u7mjr5-pooler.eastus2.azure.neon.tech:5432
+2025-10-25 22:37:35,346 - QueryStateLogger - INFO - Successfully connected to database: xpchex as user xpchex_owner at ep-muddy-glitter-a8u7mjr5-pooler.eastus2.azure.neon.tech:5432
+2025-10-25 22:37:37,434 - QueryStateLogger - INFO - Successfully connected to database: xpchex as user xpchex_owner at ep-muddy-glitter-a8u7mjr5-pooler.eastus2.azure.neon.tech:5432
+2025-10-25 22:37:39,299 - QueryStateLogger - INFO - Successfully connected to database: xpchex as user xpchex_owner at ep-muddy-glitter-a8u7mjr5-pooler.eastus2.azure.neon.tech:5432
+2025-10-25 22:37:41,430 - QueryStateLogger - INFO - Successfully connected to database: xpchex as user xpchex_owner at ep-muddy-glitter-a8u7mjr5-pooler.eastus2.azure.neon.tech:5432
+2025-10-25 22:37:43,489 - QueryStateLogger - INFO - Successfully connected to database: xpchex as user xpchex_owner at ep-muddy-glitter-a8u7mjr5-pooler.eastus2.azure.neon.tech:5432
+2025-10-25 22:37:45,339 - QueryStateLogger - INFO - Successfully connected to database: xpchex as user xpchex_owner at ep-muddy-glitter-a8u7mjr5-pooler.eastus2.azure.neon.tech:5432
+2025-10-25 22:37:47,457 - QueryStateLogger - INFO - Successfully connected to database: xpchex as user xpchex_owner at ep-muddy-glitter-a8u7mjr5-pooler.eastus2.azure.neon.tech:5432
+2025-10-25 22:37:49,390 - QueryStateLogger - INFO - Successfully connected to database: xpchex as user xpchex_owner at ep-muddy-glitter-a8u7mjr5-pooler.eastus2.azure.neon.tech:5432
+2025-10-25 22:37:51,486 - QueryStateLogger - INFO - Successfully connected to database: xpchex as user xpchex_owner at ep-muddy-glitter-a8u7mjr5-pooler.eastus2.azure.neon.tech:5432

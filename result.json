@@ -1,0 +1,41 @@
+[
+    {
+        "reviewId": "e3fc937e-a508-4302-b5f7-323aebf9184e",
+        "userName": "Erick Otieno",
+        "userImage": "https://play-lh.googleusercontent.com/a-/ALV-UjUbS-Y9mmx3YB931ay9KCLaPxGybWNrESLIOizrFflyG9m8rYkt4Q",
+        "content": "the app was working perfectly then just stopped a few days ago, i can no longer log in, whenever i try to log in i get an error.",
+        "score": 2,
+        "thumbsUpCount": 0,
+        "reviewCreatedVersion": "1.3.2",
+        "at": "2025-06-01T20:51:43",
+        "replyContent": null,
+        "repliedAt": null,
+        "appVersion": "1.3.2"
+    },
+    {
+        "reviewId": "2db750d6-4478-4335-9d96-5cca84ee9acc",
+        "userName": "Wilson Waigwa",
+        "userImage": "https://play-lh.googleusercontent.com/a-/ALV-UjWcPgax5UPsCuWFLWOg2csK3LzYI-16IOq33zuzf2lph_0B28k5",
+        "content": "Please improve this app; unlike the previous one, I cannot do transactions.",
+        "score": 1,
+        "thumbsUpCount": 0,
+        "reviewCreatedVersion": "1.3.2",
+        "at": "2025-06-01T13:40:58",
+        "replyContent": null,
+        "repliedAt": null,
+        "appVersion": "1.3.2"
+    },
+    {
+        "reviewId": "76840d6a-979d-42c9-80f4-8d03c81ca980",
+        "userName": "Mecha",
+        "userImage": "https://play-lh.googleusercontent.com/a-/ALV-UjVbT12WKlSWSISadctewQh38IC-quig10L1TJKxknhkO2H4ZGz3",
+        "content": "Great update with some useful new features, but a few are still missing, and the app feels slower than before. I suggest the following improvements: 1. Mask the account balance on the send money page. 2. Enable Lipa na M-Pesa (Buy Goods - Safaricom) functionality. 3. Add a prompt feature to request money from any M-Pesa number, similar to the deposit prompt. 4. The \"Fund My Card\" option hasn't worked for me—please check if it's a wider issue.",
+        "score": 4,
+        "thumbsUpCount": 3,
+        "reviewCreatedVersion": "1.3.2",
+        "at": "2025-06-01T09:32:24",
+        "replyContent": null,
+        "repliedAt": null,
+        "appVersion": "1.3.2"
+    }
+]
