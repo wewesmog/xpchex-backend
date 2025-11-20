@@ -176,8 +176,9 @@ class ReviewScraper:
                     filtered_count = len(result)
                     if filtered_count < original_count:
                         logger.info(f"Filtered out {original_count - filtered_count} old reviews")
+                    # If all reviews are older than cutoff_date, we've gone too far back - stop
                     if not result:
-                        logger.info(f"All reviews in this batch are older than {cutoff_date}")
+                        logger.info(f"All reviews in this batch are older than {cutoff_date} - stopping")
                         break
                 
                 # Filter reviews by end_date if provided
@@ -187,9 +188,16 @@ class ReviewScraper:
                     filtered_count = len(result)
                     if filtered_count < original_count:
                         logger.info(f"Filtered out {original_count - filtered_count} reviews after {end_date}")
+                    # If all reviews are newer than end_date, continue fetching (we're going from newest to oldest)
+                    # We'll eventually reach reviews within the date range
                     if not result:
-                        logger.info(f"All reviews in this batch are newer than {end_date}")
-                        break
+                        logger.info(f"All reviews in this batch are newer than {end_date} - continuing to next batch")
+                        if not continuation_token:
+                            logger.info("No more reviews available - stopping")
+                            break
+                        time.sleep(1)
+                        batch_number += 1
+                        continue
 
                 # Save batch to raw table and process
                 self.save_reviews_to_db(result, app_id)
@@ -272,11 +280,10 @@ def main():
     from datetime import datetime, timezone, timedelta
     last_year = datetime.today().year - 1
 
-    app_id = 'com.kcb.mobilebanking.android.mbp'
+    app_id = 'com.safaricom.mysafaricom'
     #start_date = datetime(last_year, 1, 1, tzinfo=timezone.utc)  # Start from last year 1st January
-    #end_date = None #datetime(2025, 10, 15, tzinfo=timezone.utc)    # End before July 1st
-    start_date = datetime(2025, 4, 15, tzinfo=timezone.utc)
-    end_date = datetime(2025, 10, 24, tzinfo=timezone.utc)
+    start_date = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    end_date = datetime(2025, 6, 13, 23, 59, 59, tzinfo=timezone.utc)  # End of July 24, 2025
     with ReviewScraper() as scraper:
         total_reviews, total_processed = scraper.fetch_reviews(
             app_id=app_id,
@@ -286,7 +293,7 @@ def main():
             batch_size=100,
             incremental=True,  # Ignore database, use start_date
             start_date=start_date,
-            end_date=end_date
+            #end_date=end_date
         )
         
         print(f"Total reviews fetched: {total_reviews}")

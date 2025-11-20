@@ -60,15 +60,15 @@ async def get_sentiments_analytics(
         
         # Get aggregated data based on granularity
         if granularity == Granularity.DAILY:
-            sentiments_data = await _get_aggregated_sentiments_data(start_date, end_date, granularity, sentiment, rating)
+            sentiments_data = await _get_aggregated_sentiments_data(app_id, start_date, end_date, granularity, sentiment, rating)
         elif granularity == Granularity.WEEKLY:
-            sentiments_data = await _get_aggregated_sentiments_data(start_date, end_date, granularity, sentiment, rating)
+            sentiments_data = await _get_aggregated_sentiments_data(app_id, start_date, end_date, granularity, sentiment, rating)
         elif granularity == Granularity.MONTHLY:
-            sentiments_data = await _get_aggregated_sentiments_data(start_date, end_date, granularity, sentiment, rating)
+            sentiments_data = await _get_aggregated_sentiments_data(app_id, start_date, end_date, granularity, sentiment, rating)
         elif granularity == Granularity.YEARLY:
-            sentiments_data = await _get_aggregated_sentiments_data(start_date, end_date, granularity, sentiment, rating)
+            sentiments_data = await _get_aggregated_sentiments_data(app_id, start_date, end_date, granularity, sentiment, rating)
         else:
-            sentiments_data = await _get_aggregated_sentiments_data(start_date, end_date, granularity, sentiment, rating)
+            sentiments_data = await _get_aggregated_sentiments_data(app_id, start_date, end_date, granularity, sentiment, rating)
             
 
         return {
@@ -332,10 +332,10 @@ SELECT
     p.review_created_at,
     p.username,
     p.user_image,
+    p.score AS rating,
     (t ->> 'text') AS text,
     (t -> 'sentiment' ->> 'label') AS segment_sentiment_label,
-    (t -> 'sentiment' ->> 'score')::numeric AS segment_sentiment_score,
-    p.review_id
+    (t -> 'sentiment' ->> 'score')::numeric AS segment_sentiment_score
 FROM
     processed_app_reviews AS p
 CROSS JOIN LATERAL
@@ -372,10 +372,10 @@ SELECT
     p.review_created_at,
     p.username,
     p.user_image,
+    p.score AS rating,
     (t ->> 'text') AS text,
     (t -> 'sentiment' ->> 'label') AS segment_sentiment_label,
-    (t -> 'sentiment' ->> 'score')::numeric AS segment_sentiment_score,
-    p.review_id
+    (t -> 'sentiment' ->> 'score')::numeric AS segment_sentiment_score
 FROM
     processed_app_reviews AS p
 CROSS JOIN LATERAL
@@ -434,6 +434,7 @@ WHERE
         )
 
 async def _get_aggregated_sentiments_data(
+    app_id: str,
     start_date: datetime,
     end_date: datetime,
     aggregation_level: str,
@@ -441,7 +442,7 @@ async def _get_aggregated_sentiments_data(
     rating: Optional[str] = None
 ):
     """
-    Get aggregated sentiments data for a given date range and aggregation level.
+    Get aggregated sentiments data for a given app_id, date range and aggregation level.
     """
     
     # Map aggregation levels to SQL DATE_TRUNC arguments
@@ -470,7 +471,8 @@ async def _get_aggregated_sentiments_data(
         FROM
             processed_app_reviews
         WHERE
-            DATE(review_created_at) BETWEEN %s AND %s
+            app_id = %s
+            AND DATE(review_created_at) BETWEEN %s AND %s
             -- Dynamic filters will be added here
     ),
     sentiment_counts AS (
@@ -522,7 +524,8 @@ async def _get_aggregated_sentiments_data(
             -- NPS based on sentiment data
             sum(CASE WHEN sentiment = 'positive' THEN 1 ELSE 0 END) AS sentiment_promoters,
             sum(CASE WHEN sentiment = 'negative' THEN 1 ELSE 0 END) AS sentiment_detractors,
-            sum(CASE WHEN sentiment = 'neutral' THEN 1 ELSE 0 END) AS sentiment_neutrals
+            sum(CASE WHEN sentiment = 'neutral' THEN 1 ELSE 0 END) AS sentiment_neutrals,
+            sum(CASE WHEN sentiment = 'mixed' THEN 1 ELSE 0 END) AS sentiment_mixed
         FROM
             review_data
         WHERE
@@ -544,6 +547,7 @@ async def _get_aggregated_sentiments_data(
         (SELECT sentiment_promoters FROM nps_calculation WHERE sentiment_period = rd.sentiment_period) AS sentiment_promoters,
         (SELECT sentiment_detractors FROM nps_calculation WHERE sentiment_period = rd.sentiment_period) AS sentiment_detractors,
         (SELECT sentiment_neutrals FROM nps_calculation WHERE sentiment_period = rd.sentiment_period) AS sentiment_neutrals,
+        (SELECT sentiment_mixed FROM nps_calculation WHERE sentiment_period = rd.sentiment_period) AS sentiment_mixed,
         -- Sentiment breakdown
         (
             SELECT
@@ -598,7 +602,7 @@ async def _get_aggregated_sentiments_data(
     """
 
     where_parts = []
-    params = [start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d')]
+    params = [app_id, start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d')]
 
     if sentiment:
         # Handle comma-separated sentiment values
@@ -628,10 +632,10 @@ async def _get_aggregated_sentiments_data(
                    MIN(review_created_at) as min_date, 
                    MAX(review_created_at) as max_date
             FROM processed_app_reviews 
-            WHERE DATE(review_created_at) BETWEEN %s AND %s
+            WHERE app_id = %s AND DATE(review_created_at) BETWEEN %s AND %s
             """
-            debug_result = pd.read_sql(debug_query, conn, params=tuple(params[:2]))
-            logger.info(f"Debug - Data in date range: {debug_result.to_dict('records')}")
+            debug_result = pd.read_sql(debug_query, conn, params=tuple(params))
+            logger.info(f"Debug - Data in date range for app_id={app_id}: {debug_result.to_dict('records')}")
             
             # Debug: Check what periods we're getting
             period_debug_query = f"""
@@ -639,12 +643,12 @@ async def _get_aggregated_sentiments_data(
                 DATE_TRUNC('{trunc_level}', review_created_at) AS sentiment_period,
                 COUNT(*) as period_count
             FROM processed_app_reviews 
-            WHERE DATE(review_created_at) BETWEEN %s AND %s
+            WHERE app_id = %s AND DATE(review_created_at) BETWEEN %s AND %s
             GROUP BY DATE_TRUNC('{trunc_level}', review_created_at)
             ORDER BY sentiment_period
             """
-            period_debug_result = pd.read_sql(period_debug_query, conn, params=tuple(params[:2]))
-            logger.info(f"Debug - Periods found: {period_debug_result.to_dict('records')}")
+            period_debug_result = pd.read_sql(period_debug_query, conn, params=tuple(params))
+            logger.info(f"Debug - Periods found for app_id={app_id}: {period_debug_result.to_dict('records')}")
             
             # Debug: Check sample data structure
             sample_query = """
@@ -661,10 +665,10 @@ async def _get_aggregated_sentiments_data(
                 latest_analysis->'response_recommendation' as response_recommendation_full,
                 latest_analysis as full_analysis
             FROM processed_app_reviews 
-            WHERE DATE(review_created_at) BETWEEN %s AND %s
+            WHERE app_id = %s AND DATE(review_created_at) BETWEEN %s AND %s
             LIMIT 3
             """
-            sample_result = pd.read_sql(sample_query, conn, params=tuple(params[:2]))
+            sample_result = pd.read_sql(sample_query, conn, params=tuple(params))
             logger.info(f"Debug - Sample data: {sample_result.to_dict('records')}")
             
             data = pd.read_sql(final_query, conn, params=tuple(params))
@@ -698,7 +702,8 @@ async def _get_aggregated_sentiments_data(
                         sentiment_promoters = record.get('sentiment_promoters', 0)
                         sentiment_detractors = record.get('sentiment_detractors', 0)
                         sentiment_neutrals = record.get('sentiment_neutrals', 0)
-                        sentiment_total = sentiment_promoters + sentiment_detractors + sentiment_neutrals
+                        sentiment_mixed = record.get('sentiment_mixed', 0)
+                        sentiment_total = sentiment_promoters + sentiment_detractors + sentiment_neutrals + sentiment_mixed
                         
                         if sentiment_total > 0:
                             record['sentiment_nps_score'] = round(((sentiment_promoters - sentiment_detractors) / sentiment_total) * 100, 1)
