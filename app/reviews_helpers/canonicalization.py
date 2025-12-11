@@ -22,16 +22,23 @@
 
 from app.reviews_helpers.vectorizer import get_embedding
 from app.shared_services.db import get_postgres_connection
+from app.shared_services.db_async import get_async_pool
 from app.shared_services.logger_setup import setup_logger
 from typing import List, Tuple, Optional, Dict
 import json
 from datetime import datetime
+import asyncio
 
 from app.models.canonicalization_models import llm_input, llm_output, CanonicalizationResult, CanonicalizationState, node_history
-from app.shared_services.llm import call_llm_api, QuotaExceededError
+from app.shared_services.llm import call_llm_api, call_llm_api_async, QuotaExceededError
 from app.prompts.canonicalization_prompts import canonization_with_examples, canonization_without_examples
 
 logger = setup_logger()
+
+# Helper function to get reused connection for worker threads
+def _get_reused_connection():
+    """Get connection with reuse enabled for worker threads"""
+    return get_postgres_connection(use_pool=True, reuse_thread_connection=True)
 
 def get_statements_by_date_range(start_date: str, end_date: str) -> List[Tuple[str, str, str]]:
     """
@@ -123,46 +130,38 @@ def get_statements_by_date_range(start_date: str, end_date: str) -> List[Tuple[s
             conn.close()
 
 
-def get_exact_match(state: CanonicalizationState) -> CanonicalizationState:
-    """Get exact match from statement_taxonomy or canonical_aliases."""
+async def get_exact_match_async(state: CanonicalizationState) -> CanonicalizationState:
+    """Get exact match from statement_taxonomy or canonical_aliases (asyncpg)."""
     import json
     from datetime import datetime
     
     statement_lower = state.input_statement.lower()
     logger.info(f"Finding exact match for {statement_lower}")
-    conn = get_postgres_connection()
+    pool = await get_async_pool()
+    query = """
+        SELECT canonical_id 
+        FROM statement_taxonomy 
+        WHERE 
+            lower(trim(rtrim(display_label, '.'))) = $1
+            OR lower(trim(rtrim(description, '.'))) = $1
+            OR lower(trim(rtrim(canonical_id, '.'))) = $1
+            OR examples @> $2  -- JSONB array contains
+        UNION
+        SELECT canonical_id
+        FROM canonical_aliases
+        WHERE lower(trim(rtrim(alias, '.'))) = lower(trim(rtrim($1, '.')))
+        UNION 
+        SELECT canonical_id
+        FROM canonical_statements
+        WHERE lower(trim(rtrim(statement, '.'))) = lower(trim(rtrim($1, '.')))
+    """
     try:
-        cursor = conn.cursor()
-        # Fix: Properly format JSON array contains query
-        cursor.execute("""
-            SELECT canonical_id 
-            FROM statement_taxonomy 
-            WHERE 
-                lower(trim(rtrim(display_label, '.'))) = %s
-                OR lower(trim(rtrim(description, '.'))) = %s
-               OR lower(trim(rtrim(canonical_id, '.'))) = %s
-               OR examples @> %s  -- Use JSONB array contains (no lower() on JSONB)
-            UNION
-            SELECT canonical_id
-            FROM canonical_aliases
-            WHERE lower(trim(rtrim(alias, '.'))) = lower(trim(rtrim(%s, '.')))
-            UNION 
-            SELECT canonical_id
-            FROM canonical_statements
-            WHERE lower(trim(rtrim(statement, '.'))) = lower(trim(rtrim(%s, '.')))
-        """, (
-            statement_lower,  # match display_label
-            statement_lower,  # match description
-            statement_lower,  # match canonical_id
-            json.dumps([statement_lower]),  # properly format as JSON array for @>
-            statement_lower,   # match alias
-            statement_lower   # match statement
-        ))
-        result = cursor.fetchone()
+        async with pool.acquire() as conn:
+            result = await conn.fetchrow(query, statement_lower, json.dumps([statement_lower]))
         if result:
-            logger.info(f"Exact match found for {state.input_statement}: {result[0]}") 
+            logger.info(f"Exact match found for {state.input_statement}: {result['canonical_id']}") 
             state.exact_match_result = "Exact match found"
-            state.canonical_id = result[0]
+            state.canonical_id = result['canonical_id']
             state.existing_canonical_id = True
             state.source = 'exact_match'
             state.confidence_score = 1.0
@@ -175,40 +174,33 @@ def get_exact_match(state: CanonicalizationState) -> CanonicalizationState:
             return state
     except Exception as e:
         logger.error(f"Error in exact match: {e}")
-        # Update state with error
         state.exact_match_result = "Error in exact match"
         state.exact_match_error = str(e)
         state.node_history.append(node_history(node_name='exact_match', timestamp=datetime.now().isoformat()))
         return state
-    finally:
-        if cursor:
-            cursor.close()
-        if conn:
-            conn.close()
 
 # Get match with pg_trm
 #Take a statement and match against all statements using pg_trm, while returning the similiarity
 
-def get_lexical_similarity(state: CanonicalizationState) -> CanonicalizationState:
-    """Get similarity from statement_taxonomy or canonical_aliases."""
+async def get_lexical_similarity_async(state: CanonicalizationState) -> CanonicalizationState:
+    """Get similarity from statement_taxonomy or canonical_aliases (asyncpg)."""
     statement = state.input_statement
-    conn = get_postgres_connection()
+    pool = await get_async_pool()
+    query = """
+        SELECT canonical_id,
+               description,
+               similarity(description, $1) as similarity
+        FROM statement_taxonomy
+        WHERE description IS NOT NULL
+        ORDER BY similarity DESC
+        LIMIT 15
+    """
     try:
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT  canonical_id,
-                       description,
-                       similarity(description, %s) as similarity
-                      
-            FROM statement_taxonomy
-            WHERE description IS NOT NULL
-            ORDER BY similarity DESC
-            LIMIT 15
-        """, (statement,))
-        results = cursor.fetchall()
+        async with pool.acquire() as conn:
+            results = await conn.fetch(query, statement)
         if results:
             logger.info(f"Lexical Similarity found for {statement}: {results[:5]}")
-            state.lexical_similarity_result = results     
+            state.lexical_similarity_result = [(r['canonical_id'], r['description'], r['similarity']) for r in results]
             state.node_history.append(node_history(node_name='lexical_similarity', timestamp=datetime.now().isoformat()))
             return state
         else:
@@ -217,14 +209,12 @@ def get_lexical_similarity(state: CanonicalizationState) -> CanonicalizationStat
             state.node_history.append(node_history(node_name='lexical_similarity', timestamp=datetime.now().isoformat()))
             return state
     except Exception as e:
-        print(f"Error in lexical similarity: {e}")
+        logger.error(f"Error in lexical similarity: {e}")
         state.lexical_similarity_error = str(e)
         state.node_history.append(node_history(node_name='lexical_similarity', timestamp=datetime.now().isoformat()))
         return state
-    finally:
-        conn.close()
 
-def get_vector_similarity(state: CanonicalizationState) -> CanonicalizationState:
+async def get_vector_similarity_async(state: CanonicalizationState) -> CanonicalizationState:
     """Get vector similarity from statement_taxonomy or canonical_aliases."""
     statement = state.input_statement
     # Get the embedding of the statement
@@ -240,36 +230,35 @@ def get_vector_similarity(state: CanonicalizationState) -> CanonicalizationState
         # Re-raise quota errors to stop execution immediately
         raise
         
-    conn = get_postgres_connection()
+    pool = await get_async_pool()
+    query = """
+        SELECT canonical_id, existing_statement, similarity
+        FROM (
+            SELECT  canonical_id,
+                   description as existing_statement,
+                   1 - (statement_embedding <=> $1::vector) / 2 as similarity
+            FROM statement_taxonomy
+            WHERE statement_embedding IS NOT NULL
+              AND 1 - (statement_embedding <=> $1::vector) / 2 > 0.3
+                   
+            UNION ALL
+                   
+            SELECT  canonical_id,
+                   alias as existing_statement,
+                   1 - (alias_embedding <=> $1::vector) / 2 as similarity
+            FROM canonical_aliases
+            WHERE alias_embedding IS NOT NULL
+              AND 1 - (alias_embedding <=> $1::vector) / 2 > 0.3
+        ) combined_results
+        ORDER BY similarity DESC
+        LIMIT 15
+    """
     try:
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT canonical_id, existing_statement, similarity
-            FROM (
-                SELECT  canonical_id,
-                       description as existing_statement,
-                       1 - (statement_embedding <=> %s::vector) / 2 as similarity
-                FROM statement_taxonomy
-                WHERE statement_embedding IS NOT NULL
-                and  1 - (statement_embedding <=> %s::vector) / 2 > 0.3
-                       
-                UNION ALL
-                       
-                SELECT  canonical_id,
-                       alias as existing_statement,
-                       1 - (alias_embedding <=> %s::vector) / 2 as similarity
-                FROM canonical_aliases
-                WHERE alias_embedding IS NOT NULL
-                and  1 - (alias_embedding <=> %s::vector) / 2 > 0.3
-            ) combined_results
-                
-            ORDER BY similarity DESC
-            LIMIT 15
-        """, (embedding, embedding,embedding,embedding))
-        results = cursor.fetchall()
+        async with pool.acquire() as conn:
+            results = await conn.fetch(query, embedding)
         if results:
             logger.info(f"Vector similarity found for {statement}: {results[:5]}")
-            state.vector_similarity_result = results
+            state.vector_similarity_result = [(r['canonical_id'], r['existing_statement'], r['similarity']) for r in results]
             state.node_history.append(node_history(node_name='vector_similarity', timestamp=datetime.now().isoformat()))
             return state
         else:
@@ -279,12 +268,10 @@ def get_vector_similarity(state: CanonicalizationState) -> CanonicalizationState
             state.node_history.append(node_history(node_name='vector_similarity', timestamp=datetime.now().isoformat()))
             return state
     except Exception as e:
-        print(f"Error in vector similarity: {e}")
+        logger.error(f"Error in vector similarity: {e}")
         state.vector_similarity_error = str(e)
         state.node_history.append(node_history(node_name='vector_similarity', timestamp=datetime.now().isoformat()))
         return state
-    finally:
-        conn.close()
 
 # Get weighted similarity, 0.3 * pg_trm + 0.7 * vector similarity. 
 # Pick the top 15 from both similarity and vector similarity (already done by the two functions)
@@ -398,88 +385,152 @@ def get_hybrid_similarity(state: CanonicalizationState) -> CanonicalizationState
         return state
  
     
-def enrich_hybrid_results(state: CanonicalizationState) -> CanonicalizationState:
-        """Enrich hybrid similarity results with display_label, description, examples, and aliases."""
-        try:
-            if not state.hybrid_similarity_result:
-                logger.warning("No hybrid similarity results to enrich")
-                state.enrich_hybrid_results_error = "No hybrid similarity results to enrich"
-                state.node_history.append(node_history(node_name='enrich_hybrid_results', timestamp=datetime.now().isoformat()))
-                return state
-                
-            conn = get_postgres_connection()
-            cursor = conn.cursor()
+
+async def get_hybrid_similarity_async(state: CanonicalizationState) -> CanonicalizationState:
+    """Async version of hybrid similarity using async lexical/vector functions."""
+    try:
+        state = await get_lexical_similarity_async(state)
+        state = await get_vector_similarity_async(state)
+
+        if not state.lexical_similarity_result and not state.vector_similarity_result:
+            state.hybrid_similarity_result = None
+            state.hybrid_similarity_error = "No similarity score for statement"
+            state.node_history.append(node_history(node_name='hybrid_similarity', timestamp=datetime.now().isoformat()))
+            return state
+
+        combined_dict = {}
+
+        if state.lexical_similarity_result:
+            for canonical_id, description, pg_score in state.lexical_similarity_result:
+                combined_dict[canonical_id] = {
+                    'pg_score': pg_score,
+                    'vector_score': 0.0,
+                    'statement_text': description
+                }
+
+        if state.vector_similarity_result:
+            for canonical_id, existing_statement, vector_score in state.vector_similarity_result:
+                if canonical_id not in combined_dict:
+                    combined_dict[canonical_id] = {
+                        'pg_score': 0.0,
+                        'vector_score': vector_score,
+                        'statement_text': existing_statement
+                    }
+                else:
+                    combined_dict[canonical_id]['vector_score'] = max(combined_dict[canonical_id]['vector_score'], vector_score)
+                    if vector_score > combined_dict[canonical_id]['pg_score']:
+                        combined_dict[canonical_id]['statement_text'] = existing_statement
+
+        combined_results = []
+        for canonical_id, data in combined_dict.items():
+            if data['vector_score'] > 0.95:
+                combined_score = data['vector_score']
+            else:
+                combined_score = 0.05 * data['pg_score'] + 0.95 * data['vector_score']
+            combined_results.append((canonical_id, data['statement_text'], data['pg_score'], data['vector_score'], combined_score))
+
+        combined_results.sort(key=lambda x: x[4], reverse=True)
+        combined_results = combined_results[:15]
+
+        state.hybrid_similarity_result = combined_results
+
+        if combined_results and combined_results[0][4] > 0.95:
+            state.canonical_id = combined_results[0][0]
+            state.existing_canonical_id = True
+            state.source = 'hybrid_similarity'
+            state.confidence_score = combined_results[0][4]
+            state.results = f"High confidence hybrid match: {combined_results[0][0]} (score: {combined_results[0][4]:.3f})"
+        else:
+            state.canonical_id = None
+            state.results = f"Low confidence hybrid match, top score: {combined_results[0][4]:.3f}" if combined_results else "No hybrid matches found"
+
+        state.node_history.append(node_history(node_name='hybrid_similarity', timestamp=datetime.now().isoformat()))
+        return state
+
+    except Exception as e:
+        logger.error(f"Error in hybrid similarity (async): {e}")
+        state.hybrid_similarity_error = str(e)
+        state.error.append({
+            "source": "hybrid_similarity",
+            "timestamp": datetime.now().isoformat(),
+            "message": f"Hybrid similarity error: {str(e)}"
+        })
+        state.node_history.append(node_history(node_name='hybrid_similarity', timestamp=datetime.now().isoformat()))
+        return state
+
+async def enrich_hybrid_results_async(state: CanonicalizationState) -> CanonicalizationState:
+    """Enrich hybrid similarity results with display_label, description, examples, and aliases (asyncpg)."""
+    try:
+        if not state.hybrid_similarity_result:
+            logger.warning("No hybrid similarity results to enrich")
+            state.enrich_hybrid_results_error = "No hybrid similarity results to enrich"
+            state.node_history.append(node_history(node_name='enrich_hybrid_results', timestamp=datetime.now().isoformat()))
+            return state
             
-            # Enrich top 5 candidates from hybrid results
-            enriched_candidates = []
-            # Handle both single tuple and list of tuples
-            hybrid_results = state.hybrid_similarity_result if isinstance(state.hybrid_similarity_result, list) else [state.hybrid_similarity_result]
-            
-            for cid, text, pg_score, vector_score, combined_score in hybrid_results[:5]:  # Top 5 only
-                cursor.execute("""
-                    WITH aggregated_aliases AS (
-                        SELECT
-                            t.canonical_id,
-                            ARRAY_AGG(t.alias ORDER BY t.alias) AS aliases
-                        FROM
-                            canonical_aliases t 
-                        GROUP BY
-                            t.canonical_id
-                    )
-                    SELECT
-                        st.canonical_id,
-                        st.display_label,
-                        st.description,
-                        st.examples,
-                        COALESCE(aa.aliases, ARRAY[]::text[]) as aliases
-                    FROM
-                        statement_taxonomy st
-                    LEFT OUTER JOIN
-                        aggregated_aliases aa ON st.canonical_id = aa.canonical_id
-                    WHERE
-                        st.canonical_id = %s;
-                """, (cid,))
-                result = cursor.fetchone()
+        pool = await get_async_pool()
+        enriched_candidates = []
+        hybrid_results = state.hybrid_similarity_result if isinstance(state.hybrid_similarity_result, list) else [state.hybrid_similarity_result]
+        query = """
+            WITH aggregated_aliases AS (
+                SELECT
+                    t.canonical_id,
+                    ARRAY_AGG(t.alias ORDER BY t.alias) AS aliases
+                FROM
+                    canonical_aliases t 
+                GROUP BY
+                    t.canonical_id
+            )
+            SELECT
+                st.canonical_id,
+                st.display_label,
+                st.description,
+                st.examples,
+                COALESCE(aa.aliases, ARRAY[]::text[]) as aliases
+            FROM
+                statement_taxonomy st
+            LEFT OUTER JOIN
+                aggregated_aliases aa ON st.canonical_id = aa.canonical_id
+            WHERE
+                st.canonical_id = $1;
+        """
+        async with pool.acquire() as conn:
+            for cid, text, pg_score, vector_score, combined_score in hybrid_results[:5]:
+                result = await conn.fetchrow(query, cid)
                 if result:
-                    logger.info(f"Enriched canonical_id: {cid} with display_label: {result[1]}, description: {result[2]}")
+                    logger.info(f"Enriched canonical_id: {cid} with display_label: {result['display_label']}, description: {result['description']}")
                     enriched_candidates.append({
-                        'canonical_id': result[0],
-                        'display_label': result[1],
-                        'description': result[2],
-                        'examples': result[3],
-                        'aliases': result[4],
+                        'canonical_id': result['canonical_id'],
+                        'display_label': result['display_label'],
+                        'description': result['description'],
+                        'examples': result['examples'],
+                        'aliases': result['aliases'],
                         'combined_score': combined_score,
                         'pg_score': pg_score,
                         'vector_score': vector_score
                     })
                 else:
                     logger.warning(f"No data found for canonical_id: {cid}")
-            
-            state.enriched_candidates = enriched_candidates
-            state.enrich_hybrid_results_result = f"Enriched {len(enriched_candidates)} candidates"
-            state.results = f"Enriched {len(enriched_candidates)} candidates for LLM"
-            state.node_history.append(node_history(node_name='enrich_hybrid_results', timestamp=datetime.now().isoformat()))
-            return state
-            
-        except Exception as e:
-            logger.error(f"Error enriching hybrid results: {e}")
-            state.enrich_hybrid_results_error = str(e)
-            state.error.append({
-                "source": "enrich_hybrid_results",
-                "timestamp": datetime.now().isoformat(),
-                "message": f"Enrich hybrid results error: {str(e)}"
-            })
-            state.node_history.append(node_history(node_name='enrich_hybrid_results', timestamp=datetime.now().isoformat()))
-            return state
-        finally:
-            if cursor:
-                cursor.close()
-            if conn:
-                conn.close()
+        
+        state.enriched_candidates = enriched_candidates
+        state.enrich_hybrid_results_result = f"Enriched {len(enriched_candidates)} candidates"
+        state.results = f"Enriched {len(enriched_candidates)} candidates for LLM"
+        state.node_history.append(node_history(node_name='enrich_hybrid_results', timestamp=datetime.now().isoformat()))
+        return state
+        
+    except Exception as e:
+        logger.error(f"Error enriching hybrid results: {e}")
+        state.enrich_hybrid_results_error = str(e)
+        state.error.append({
+            "source": "enrich_hybrid_results",
+            "timestamp": datetime.now().isoformat(),
+            "message": f"Enrich hybrid results error: {str(e)}"
+        })
+        state.node_history.append(node_history(node_name='enrich_hybrid_results', timestamp=datetime.now().isoformat()))
+        return state
 
-def get_llm_input(state: CanonicalizationState) -> CanonicalizationState:
-    """Get LLM input for canonicalization."""
-    logger.info("Starting llm canonicalization")
+async def get_llm_input(state: CanonicalizationState) -> CanonicalizationState:
+    """Get LLM input for canonicalization (async version)."""
+    logger.info("Starting llm canonicalization (async)")
     
     try:
         # Create llm_input object from state
@@ -500,7 +551,8 @@ def get_llm_input(state: CanonicalizationState) -> CanonicalizationState:
                     {"role": "system", "content": "You are a helpful assistant that canonicalizes statements."},
                     {"role": "user", "content": examples_prompt}
                 ]
-                result = call_llm_api(messages, response_format=llm_output)
+                # Await async LLM call (no nested event loop)
+                result = await call_llm_api_async(messages, response_format=llm_output)
                 logger.info(f"LLM output: {result}")
                 if result:
                     state.llm_with_examples_result = result.canonical_id
@@ -521,10 +573,11 @@ def get_llm_input(state: CanonicalizationState) -> CanonicalizationState:
                 state.node_history.append(node_history(node_name='llm_with_examples', timestamp=datetime.now().isoformat()))
                 raise
             except Exception as e:
-                logger.error(f"Error in LLM API call: {e}")
+                # Re-raise all LLM errors to stop execution
+                logger.error(f"Error in LLM API call - stopping: {e}")
                 state.llm_with_examples_error = str(e)
                 state.node_history.append(node_history(node_name='llm_with_examples', timestamp=datetime.now().isoformat()))
-                return state
+                raise
         else:
             logger.info(f"No examples found for LLM canonicalization")
             try:
@@ -532,7 +585,8 @@ def get_llm_input(state: CanonicalizationState) -> CanonicalizationState:
                     {"role": "system", "content": "You are a helpful assistant that canonicalizes statements."},
                     {"role": "user", "content": no_examples_prompt}
                 ]
-                result = call_llm_api(messages, response_format=llm_output)
+                # Await async LLM call (no nested event loop)
+                result = await call_llm_api_async(messages, response_format=llm_output)
                 logger.info(f"LLM output: {result}")
                 if result:
                     state.llm_without_examples_result = result.canonical_id
@@ -557,7 +611,8 @@ def get_llm_input(state: CanonicalizationState) -> CanonicalizationState:
                 })
                 raise
             except Exception as e:
-                logger.error(f"Error in LLM API call: {e}")
+                # Re-raise all LLM errors to stop execution
+                logger.error(f"Error in LLM API call - stopping: {e}")
                 state.llm_without_examples_error = str(e)
                 state.error.append({
                     "source": "llm_without_examples",
@@ -565,7 +620,7 @@ def get_llm_input(state: CanonicalizationState) -> CanonicalizationState:
                     "message": f"LLM without examples error: {str(e)}"
                 })
                 state.node_history.append(node_history(node_name='llm_without_examples', timestamp=datetime.now().isoformat()))
-                return state
+                raise
                 
     except Exception as e:
         logger.error(f"Error in get_llm_input: {e}")
@@ -583,8 +638,10 @@ def save_canonicalization_result(state: CanonicalizationState, app_id: str = Non
     Save canonicalization result to database (both success and failure).
     Failure is determined by whether canonical_id is NULL.
     """
+    conn = None
+    cursor = None
     try:
-        conn = get_postgres_connection()
+        conn = _get_reused_connection()
         cursor = conn.cursor()
         
         # Convert Pydantic models to dictionaries for JSONB storage
@@ -795,6 +852,154 @@ def save_canonicalization_result(state: CanonicalizationState, app_id: str = Non
             cursor.close()
         if conn:
             conn.close()
+
+
+async def save_canonicalization_result_async(state: CanonicalizationState, app_id: str = None, review_id: str = None, review_section: str = None) -> CanonicalizationState:
+    """
+    Async version: Save canonicalization result using asyncpg pool.
+    """
+    import json
+    node_history_dict = [node.dict() for node in state.node_history] if state.node_history else []
+    try:
+        pool = await get_async_pool()
+        async with pool.acquire() as conn:
+            # Success path
+            if state.canonical_id:
+                if not state.existing_canonical_id and state.llm_used:
+                    logger.info(f"LLM created new canonical_id: {state.canonical_id}, source: {state.source}, llm_used: {state.llm_used}")
+                    category = 'General'
+                    subcategory = 'General'
+                    display_label = state.canonical_id.replace('_', ' ').title()
+                    description = f"Auto-generated canonical ID for: {state.input_statement}"
+                    try:
+                        statement_embedding = get_embedding(state.input_statement) if state.input_statement else None
+                    except QuotaExceededError:
+                        raise
+                    await conn.execute("""
+                        INSERT INTO statement_taxonomy 
+                        (canonical_id, review_section, category, subcategory, display_label, description, source, statement_embedding)
+                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                        ON CONFLICT (canonical_id) DO UPDATE SET
+                            category = EXCLUDED.category,
+                            subcategory = EXCLUDED.subcategory,
+                            display_label = EXCLUDED.display_label,
+                            description = EXCLUDED.description,
+                            statement_embedding = EXCLUDED.statement_embedding,
+                            updated_at = CURRENT_TIMESTAMP
+                    """, state.canonical_id, review_section or 'issues', category, subcategory, display_label, description, 'llm_created', statement_embedding)
+                    if state.source in ['llm_with_examples', 'llm_without_examples', 'hybrid_similarity']:
+                        aliases_to_save = [state.input_statement]
+                        for alias in aliases_to_save:
+                            if alias and alias.strip():
+                                try:
+                                    alias_embedding = get_embedding(alias) if alias else None
+                                except QuotaExceededError:
+                                    raise
+                                await conn.execute("""
+                                    INSERT INTO canonical_aliases 
+                                    (alias, canonical_id, source, confidence, alias_embedding)
+                                    VALUES ($1, $2, $3, $4, $5)
+                                    ON CONFLICT (alias) DO UPDATE SET
+                                        canonical_id = EXCLUDED.canonical_id,
+                                        confidence = EXCLUDED.confidence,
+                                        alias_embedding = EXCLUDED.alias_embedding,
+                                        updated_at = CURRENT_TIMESTAMP
+                                """, alias.strip(), state.canonical_id, 'llm_created', state.confidence_score, alias_embedding)
+                # canonical_statements
+                await conn.execute("""
+                    INSERT INTO canonical_statements 
+                    (statement, canonical_id, source, confidence, statement_embedding, review_section)
+                    VALUES ($1, $2, $3, $4, $5, $6)
+                    ON CONFLICT (statement) DO UPDATE SET
+                        canonical_id = EXCLUDED.canonical_id,
+                        source = EXCLUDED.source,
+                        confidence = EXCLUDED.confidence,
+                        statement_embedding = EXCLUDED.statement_embedding,
+                        updated_at = CURRENT_TIMESTAMP
+                """, state.input_statement, state.canonical_id, state.source, state.confidence_score, None, review_section or 'issues')
+
+            # canonicalization_results log
+            await conn.execute("""
+                INSERT INTO canonicalization_results (
+                    input_statement, canonical_id, existing_canonical_id, source, confidence_score, 
+                    results, llm_used, node_history, errors, enriched_candidates, 
+                    enrich_hybrid_results_result, llm_with_examples_result, llm_without_examples_result, 
+                    llm_with_examples_error, llm_without_examples_error, exact_match_result, 
+                    exact_match_error, lexical_similarity_result, lexical_similarity_error,
+                    vector_similarity_result, vector_similarity_error, hybrid_similarity_result,
+                    hybrid_similarity_error, enrich_hybrid_results_error
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)
+            """,
+            state.input_statement,
+            state.canonical_id,
+            state.existing_canonical_id,
+            state.source,
+            state.confidence_score,
+            state.results,
+            state.llm_used,
+            json.dumps(node_history_dict),
+            json.dumps(state.error),
+            json.dumps(state.enriched_candidates) if state.enriched_candidates else None,
+            state.enrich_hybrid_results_result,
+            state.llm_with_examples_result,
+            state.llm_without_examples_result,
+            state.llm_with_examples_error,
+            state.llm_without_examples_error,
+            state.exact_match_result,
+            state.exact_match_error,
+            json.dumps(state.lexical_similarity_result) if state.lexical_similarity_result else None,
+            state.lexical_similarity_error,
+            json.dumps(state.vector_similarity_result) if state.vector_similarity_result else None,
+            state.vector_similarity_error,
+            json.dumps(state.hybrid_similarity_result) if state.hybrid_similarity_result else None,
+            state.hybrid_similarity_error,
+            state.enrich_hybrid_results_error
+            )
+
+            # success/failure tables
+            if state.canonical_id:
+                await conn.execute("""
+                    INSERT INTO review_statements (
+                        review_id, app_id, canonical_id, review_section, severity, 
+                        impact_score, confidence, source, canonicalization_status,
+                        node_history, errors
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                    ON CONFLICT (review_id, canonical_id) DO UPDATE SET
+                        canonicalization_status = EXCLUDED.canonicalization_status,
+                        error_type = NULL,
+                        error_message = NULL,
+                        node_history = EXCLUDED.node_history,
+                        errors = EXCLUDED.errors,
+                        created_at = CURRENT_TIMESTAMP
+                """, review_id or 'unknown', app_id or 'unknown', state.canonical_id, review_section or 'unknown',
+                'medium', 50.0, state.confidence_score or 0.0, state.source or 'success', 'success',
+                json.dumps(node_history_dict), json.dumps(state.error) if state.error else None)
+            else:
+                await conn.execute("""
+                    INSERT INTO failed_canonicalizations (
+                        review_id, app_id, input_statement, review_section, severity, 
+                        impact_score, confidence, source, canonicalization_status,
+                        error_type, error_message, node_history, errors
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                """, review_id or 'unknown', app_id or 'unknown', state.input_statement, review_section or 'unknown',
+                'medium', 50.0, state.confidence_score or 0.0, state.source or 'failed', 'failed',
+                'canonicalization_failed', 'Failed to generate canonical_id',
+                json.dumps(node_history_dict), json.dumps(state.error) if state.error else None)
+
+        canonicalization_status = 'success' if state.canonical_id else 'failed'
+        state.results = canonicalization_status
+        logger.info(f"Successfully saved canonicalization result to all tables for: {state.input_statement} (status: {canonicalization_status})")
+        return state
+
+    except Exception as e:
+        logger.error(f"Error saving canonicalization result (async): {e}")
+        state.error.append({
+            "source": "save_canonicalization_result_async",
+            "timestamp": datetime.now().isoformat(),
+            "message": f"Save error: {str(e)}"
+        })
+        return state
 
 
 

@@ -6,7 +6,7 @@ from enum import Enum
 from dateutil.relativedelta import relativedelta
 import ast
 
-from app.shared_services.db import get_postgres_connection
+from app.shared_services.db import pooled_connection
 import pandas as pd
 
 logger = logging.getLogger(__name__)
@@ -296,7 +296,7 @@ def _get_alltime_granularity() -> Granularity:
         query = """
         SELECT MIN(review_created_at) FROM processed_app_reviews
         """
-        with get_postgres_connection() as conn:
+        with pooled_connection() as conn:
             result = pd.read_sql(query, conn)
             if not result.empty and result.iloc[0, 0] is not None:
                 min_date = result.iloc[0, 0]
@@ -339,14 +339,23 @@ SELECT
 FROM
     processed_app_reviews AS p
 CROSS JOIN LATERAL
-    jsonb_array_elements(p.latest_analysis -> 'sentiment' -> 'segments') AS t
+    jsonb_array_elements(
+        CASE 
+            WHEN jsonb_typeof(p.latest_analysis -> 'sentiment' -> 'segments') = 'array' 
+            THEN p.latest_analysis -> 'sentiment' -> 'segments'
+            ELSE '[]'::jsonb
+        END
+    ) AS t
 WHERE
-    p.latest_analysis IS NOT NULL AND p.app_id = %s AND DATE(p.review_created_at) BETWEEN %s AND %s
+    p.latest_analysis IS NOT NULL 
+    AND jsonb_typeof(p.latest_analysis -> 'sentiment' -> 'segments') = 'array'
+    AND p.app_id = %s 
+    AND DATE(p.review_created_at) BETWEEN %s AND %s
 ORDER BY RANDOM()
 LIMIT 5
 """
         params = [app_id, start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d')]
-        with get_postgres_connection() as conn:
+        with pooled_connection() as conn:
             data = pd.read_sql(base_query, conn, params=tuple(params))
             records = data.to_dict('records')
             return records
@@ -379,12 +388,21 @@ SELECT
 FROM
     processed_app_reviews AS p
 CROSS JOIN LATERAL
-    jsonb_array_elements(p.latest_analysis -> 'sentiment' -> 'segments') AS t
+    jsonb_array_elements(
+        CASE 
+            WHEN jsonb_typeof(p.latest_analysis -> 'sentiment' -> 'segments') = 'array' 
+            THEN p.latest_analysis -> 'sentiment' -> 'segments'
+            ELSE '[]'::jsonb
+        END
+    ) AS t
 WHERE
-    p.latest_analysis IS NOT NULL AND p.app_id = %s AND DATE(p.review_created_at) BETWEEN %s AND %s
+    p.latest_analysis IS NOT NULL 
+    AND jsonb_typeof(p.latest_analysis -> 'sentiment' -> 'segments') = 'array'
+    AND p.app_id = %s 
+    AND DATE(p.review_created_at) BETWEEN %s AND %s
 """
         params = [app_id, start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d')]
-        with get_postgres_connection() as conn:
+        with pooled_connection() as conn:
             data = pd.read_sql(base_query, conn, params=tuple(params))
             records = data.to_dict('records')
             return records
@@ -423,7 +441,7 @@ WHERE
     AND DATE(p.review_created_at) BETWEEN %s AND %s
 """
         params = [app_id, start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d')]
-        with get_postgres_connection() as conn:
+        with pooled_connection() as conn:
             data = pd.read_sql(base_query, conn, params=tuple(params))
             return data.to_dict('records')
     except Exception as e:
@@ -622,7 +640,7 @@ async def _get_aggregated_sentiments_data(
     )
 
     try:
-        with get_postgres_connection() as conn:
+        with pooled_connection() as conn:
             logger.info(f"Executing aggregation query with params: {params}")
             logger.info(f"Final query: {final_query}")
             
@@ -843,7 +861,7 @@ async def _get_reviews_list(
     try:
         # NOTE: get_postgres_connection() must be implemented to work.
         # This assumes a context manager that returns a connection object suitable for pandas.read_sql
-        with get_postgres_connection() as conn:
+        with pooled_connection() as conn:
             logger.info(f"Executing reviews list query with params: {params}")
             logger.info(f"Final SQL query: {final_query}")
             
@@ -912,7 +930,7 @@ async def _get_reviews_list_count(
     
     # Execute query and return data
     try:
-        with get_postgres_connection() as conn:
+        with pooled_connection() as conn:
             data = pd.read_sql(final_query, conn, params=tuple(params))
             if not data.empty:
                 count = int(data['count'].iloc[0])

@@ -6,7 +6,7 @@ from enum import Enum
 from dateutil.relativedelta import relativedelta
 import ast
 
-from app.shared_services.db import get_postgres_connection
+from app.shared_services.db import pooled_connection
 import pandas as pd
 
 logger = logging.getLogger(__name__)
@@ -227,7 +227,7 @@ def _get_alltime_granularity() -> Granularity:
         query = """
         SELECT MIN(first_date_recommended) FROM issues
         """
-        with get_postgres_connection() as conn:
+        with pooled_connection() as conn:
             result = pd.read_sql(query, conn)
             if not result.empty and result.iloc[0, 0] is not None:
                 min_date = result.iloc[0, 0]
@@ -490,7 +490,7 @@ async def _get_aggregated_actions_data(
     )
 
     try:
-        with get_postgres_connection() as conn:
+        with pooled_connection() as conn:
             logger.info(f"Executing aggregation query with params: {params}")
             logger.info(f"Final query: {final_query}")
             
@@ -644,7 +644,7 @@ async def _get_actions_list(
     
     # 6. Execute query and return data
     try:
-        with get_postgres_connection() as conn:
+        with pooled_connection() as conn:
             logger.info(f"Executing actions list query with params: {params}")
             logger.info(f"Final query: {final_query}")
             data = pd.read_sql(final_query, conn, params=tuple(params))
@@ -727,7 +727,7 @@ async def _get_actions_list_count(
     
     # Execute query and return data
     try:
-        with get_postgres_connection() as conn:
+        with pooled_connection() as conn:
             data = pd.read_sql(final_query, conn, params=tuple(params))
             if not data.empty:
                 count = int(data['count'].iloc[0])

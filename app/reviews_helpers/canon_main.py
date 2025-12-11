@@ -1,8 +1,11 @@
 import logging
+import asyncio
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from app.reviews_helpers.canon_graph import build_graph
+from app.reviews_helpers.canon_workflow_async import run_canonicalization_workflow_async
 from app.models.canonicalization_models import CanonicalizationState
-from app.shared_services.db import get_postgres_connection
+from app.shared_services.db import get_postgres_connection, init_connection_pool, release_thread_connection, close_connection_pool
+from app.shared_services.db_async import init_async_pool, close_async_pool
 from datetime import datetime, timedelta
 from typing import List, Tuple, Optional
 
@@ -427,13 +430,83 @@ def process_statements_for_date(
     return processed_count
 
 
-def process_single_statement(graph, statement: Tuple, statement_num: int, stop_on_error: bool = False) -> bool:
-    """Process a single statement through the LangGraph workflow
+# Async variants -------------------------------------------------
+
+async def process_single_statement_async(
+    statement: Tuple,
+    statement_num: int,
+    stop_on_error: bool = False,
+) -> bool:
+    """Run single statement processing asynchronously (fully async workflow)."""
+    return await process_single_statement_async_native(
+        statement,
+        statement_num,
+        stop_on_error,
+    )
+
+
+async def process_statements_for_date_async(
+    statements: List[Tuple],
+    statements_per_batch: Optional[int] = None,
+    max_workers: int = 5,
+    stop_on_error: bool = False,
+) -> int:
+    """Async processing of statements with asyncio.gather and thread offload."""
+    if not statements:
+        logger.info("No statements to process")
+        return 0
+
+    total_statements = len(statements)
+    logger.info(f"[async] Processing {total_statements} statements (fully async workflow)")
+    if statements_per_batch:
+        logger.info(f"[async] Submitting statements in batches of {statements_per_batch}")
+
+    processed_count = 0
+    failed_count = 0
+
+    async def run_batch(batch_statements, offset):
+        nonlocal processed_count, failed_count
+        tasks = [
+            process_single_statement_async(
+                statement,
+                offset + idx + 1,
+                stop_on_error,
+            )
+            for idx, statement in enumerate(batch_statements)
+        ]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for res in results:
+            if res is True:
+                processed_count += 1
+            elif res is False:
+                failed_count += 1
+            elif isinstance(res, Exception):
+                logger.error(f"[async] Error processing statement: {res}")
+                if stop_on_error:
+                    raise res
+                failed_count += 1
+
+    if statements_per_batch:
+        batches = [statements[i:i + statements_per_batch] for i in range(0, total_statements, statements_per_batch)]
+        logger.info(f"[async] Created {len(batches)} statement batches")
+        for batch_num, batch in enumerate(batches, 1):
+            logger.info(f"[async] Submitting statement batch {batch_num}/{len(batches)} ({len(batch)} statements)")
+            await run_batch(batch, (batch_num - 1) * statements_per_batch)
+    else:
+        logger.info("[async] Submitting all statements at once")
+        await run_batch(statements, 0)
+
+    logger.info(f"[async] Finished processing. Total: {processed_count} succeeded, {failed_count} failed")
+    return processed_count
+
+
+async def process_single_statement_async_native(statement: Tuple, statement_num: int, stop_on_error: bool = False) -> bool:
+    """Process a single statement through the async workflow (fully async, no LangGraph)
     
     Args:
-        graph: The compiled LangGraph workflow
         statement: Tuple of (section_type, free_text_description, review_id, review_created_at)
         statement_num: Statement number for logging
+        stop_on_error: Whether to stop on errors
     
     Returns:
         bool: True if successful, False otherwise
@@ -446,7 +519,7 @@ def process_single_statement(graph, statement: Tuple, statement_num: int, stop_o
     else:
         review_created_at_str = str(review_created_at) if review_created_at else None
     
-    logger.info(f"Processing statement [{statement_num}]: {free_text_description[:100]}...")
+    logger.info(f"[async] Processing statement [{statement_num}]: {free_text_description[:100]}...")
     try:
         state = CanonicalizationState(
             input_statement=free_text_description,
@@ -456,48 +529,308 @@ def process_single_statement(graph, statement: Tuple, statement_num: int, stop_o
         )
         
         try:
-            result = graph.invoke(state)
-            status = "Success" if result.get('canonical_id') else "Failed"
-            canonical_id = result.get('canonical_id', 'None')
-            logger.info(f"Statement [{statement_num}] - Status: {status}, Canonical ID: {canonical_id}")
-            return result.get('canonical_id') is not None
+            # Use async workflow (simple if/then logic)
+            result = await run_canonicalization_workflow_async(state)
+            status = "Success" if result.canonical_id else "Failed"
+            canonical_id = result.canonical_id or 'None'
+            logger.info(f"[async] Statement [{statement_num}] - Status: {status}, Canonical ID: {canonical_id}")
+            return result.canonical_id is not None
         except Exception as e:
-            logger.error(f"Error invoking graph for statement [{statement_num}]: {e}")
+            logger.error(f"[async] Error in workflow for statement [{statement_num}]: {e}")
             if stop_on_error:
                 raise
             return False
     except Exception as e:
-        logger.error(f"Error processing statement [{statement_num}]: {e}")
+        logger.error(f"[async] Error processing statement [{statement_num}]: {e}")
         if stop_on_error:
             raise
         return False
+    finally:
+        # Release thread-local connection back to pool when worker finishes
+        release_thread_connection()
+
+
+def process_single_statement(graph, statement: Tuple, statement_num: int, stop_on_error: bool = False) -> bool:
+    """Process a single statement (sync wrapper for backward compatibility with old code)
     
-if __name__ == "__main__":
+    Args:
+        graph: The compiled LangGraph workflow (kept for backward compatibility, but not used)
+        statement: Tuple of (section_type, free_text_description, review_id, review_created_at)
+        statement_num: Statement number for logging
+        stop_on_error: Whether to stop on errors
+    
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    # Run the async version in a new event loop (for backward compatibility)
+    return asyncio.run(process_single_statement_async_native(statement, statement_num, stop_on_error))
+    
+def get_failed_canonicalizations(
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    limit: Optional[int] = None,
+    error_type: Optional[str] = None
+) -> List[Tuple]:
+    """Get failed canonicalizations from failed_canonicalizations table
+    
+    Args:
+        start_date: Filter by created_at >= start_date (YYYY-MM-DD format)
+        end_date: Filter by created_at <= end_date (YYYY-MM-DD format)
+        limit: Maximum number of failed records to return (None = no limit)
+        error_type: Filter by specific error_type (e.g., 'canonicalization_failed')
+    
+    Returns:
+        List of tuples: (input_statement, review_id, review_section, created_at, error_message)
+    """
+    conn = None
+    cursor = None
+    try:
+        conn = get_postgres_connection()
+        cursor = conn.cursor()
+        
+        query = """
+            SELECT 
+                input_statement,
+                review_id,
+                review_section,
+                created_at,
+                error_message
+            FROM failed_canonicalizations
+            WHERE 1=1
+        """
+        params = []
+        
+        if start_date:
+            query += " AND date(created_at) >= %s"
+            params.append(start_date)
+        
+        if end_date:
+            query += " AND date(created_at) <= %s"
+            params.append(end_date)
+        
+        if error_type:
+            query += " AND error_type = %s"
+            params.append(error_type)
+        
+        query += " ORDER BY created_at DESC"
+        
+        if limit:
+            query += " LIMIT %s"
+            params.append(limit)
+        
+        cursor.execute(query, params)
+        results = cursor.fetchall()
+        logger.info(f"Found {len(results)} failed canonicalizations")
+        return results
+        
+    except Exception as e:
+        logger.error(f"Error fetching failed canonicalizations: {e}")
+        raise
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
+
+def rerun_failed_canonicalizations(
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    limit: Optional[int] = None,
+    error_type: Optional[str] = None,
+    clear_old_failures: bool = False,
+    statements_per_batch: Optional[int] = None,
+    max_workers: int = 5,
+    stop_on_error: bool = False
+) -> int:
+    """Rerun failed canonicalizations
+    
+    Args:
+        start_date: Filter failed records by created_at >= start_date (YYYY-MM-DD format)
+        end_date: Filter failed records by created_at <= end_date (YYYY-MM-DD format)
+        limit: Maximum number of failed records to rerun (None = all matching)
+        error_type: Filter by specific error_type
+        clear_old_failures: If True, delete old failed records before rerunning (default: False)
+        statements_per_batch: Number of statements to submit at once (None = all at once)
+        max_workers: Maximum number of concurrent workers (default: 5)
+        stop_on_error: If True, abort on first error (default: False)
+    
+    Returns:
+        int: Number of statements successfully reprocessed
+    """
+    logger.info("=" * 60)
+    logger.info("RERUNNING FAILED CANONICALIZATIONS")
+    logger.info("=" * 60)
+    
+    # Get failed canonicalizations
+    failed_records = get_failed_canonicalizations(
+        start_date=start_date,
+        end_date=end_date,
+        limit=limit,
+        error_type=error_type
+    )
+    
+    if not failed_records:
+        logger.info("No failed canonicalizations found to rerun")
+        return 0
+    
+    logger.info(f"Found {len(failed_records)} failed canonicalizations to rerun")
+    
+    # Optionally clear old failures
+    if clear_old_failures:
+        logger.info("Clearing old failed records from failed_canonicalizations table...")
+        conn = None
+        cursor = None
+        try:
+            conn = get_postgres_connection()
+            cursor = conn.cursor()
+            
+            delete_query = "DELETE FROM failed_canonicalizations WHERE 1=1"
+            delete_params = []
+            
+            if start_date:
+                delete_query += " AND date(created_at) >= %s"
+                delete_params.append(start_date)
+            
+            if end_date:
+                delete_query += " AND date(created_at) <= %s"
+                delete_params.append(end_date)
+            
+            if error_type:
+                delete_query += " AND error_type = %s"
+                delete_params.append(error_type)
+            
+            cursor.execute(delete_query, delete_params)
+            deleted_count = cursor.rowcount
+            conn.commit()
+            logger.info(f"Deleted {deleted_count} old failed records")
+            
+        except Exception as e:
+            logger.error(f"Error clearing old failures: {e}")
+            if conn:
+                conn.rollback()
+            raise
+        finally:
+            if cursor:
+                cursor.close()
+            if conn:
+                conn.close()
+    
+    # Convert failed records to statement format
+    # Format: (section_type, free_text_description, review_id, review_created_at)
+    # Note: We don't have review_created_at in failed_canonicalizations, so we'll use current timestamp
+    statements = []
+    for record in failed_records:
+        input_statement, review_id, review_section, created_at, error_message = record
+        # Use created_at from failed record, or current time if None
+        review_created_at = created_at if created_at else datetime.now()
+        statements.append((
+            review_section or 'issues',  # section_type
+            input_statement,              # free_text_description
+            review_id,                     # review_id
+            review_created_at              # review_created_at
+        ))
+    
+    logger.info(f"Prepared {len(statements)} statements for reprocessing")
+    
+    # Process statements using existing function
+    processed_count = process_statements_for_date(
+        statements,
+        statements_per_batch=statements_per_batch,
+        max_workers=max_workers,
+        stop_on_error=stop_on_error,
+    )
+    
+    logger.info(f"Successfully reprocessed {processed_count}/{len(statements)} failed canonicalizations")
+    return processed_count
+
+
+async def main_async():
+    # Initialize connection pools (sync and async) for production throughput
+    try:
+        init_connection_pool(minconn=10, maxconn=50)
+        await init_async_pool(min_size=10, max_size=50)
+        logger.info("Connection pools initialized successfully")
+    except Exception as e:
+        logger.error(f"Failed to initialize connection pools: {e}")
+        raise
+    
     # Set your parameters here
     # Set to None to automatically use min/max dates from uncanonized records
     start_date = None  # 'YYYY-MM-DD' format or None for auto-detect
     end_date = None  # 'YYYY-MM-DD' format or None for auto-detect
     date_range = 1  # Days to increment per iteration
-    review_limit = None# 5  # Maximum number of reviews to process (None = no limit, for testing)
+    review_limit = None  # Maximum number of reviews to process (None = no limit, for testing)
     reviews_per_batch = None  # Number of reviews to process per batch (None = all reviews at once)
     statements_per_batch = None  # Number of statements to submit at once (None = all at once, workers pick when free)
-    max_workers = 5  # Maximum number of concurrent workers (threads)
-    stop_on_error = True  # Set True to abort entire run on first statement error
+    max_workers = 50  # Maximum number of concurrent workers (threads) - used by to_thread offload
+    stop_on_error = False  # Continues on DB errors, but LLM errors will still stop
     
     try:
-        process_statements(
-            start_date=start_date, 
-            end_date=end_date, 
-            date_range=date_range, 
-            review_limit=review_limit,
-            reviews_per_batch=reviews_per_batch,
-            statements_per_batch=statements_per_batch,
-            max_workers=max_workers,
-            stop_on_error=stop_on_error,
-        )
+        # Step 1: Normal processing (process uncanonized statements) using async path
+        logger.info("=" * 60)
+        logger.info("STEP 1: Processing uncanonized statements (async)")
+        logger.info("=" * 60)
+        try:
+            # Use async date loop leveraging existing sync helpers for dates
+            # We reuse process_statements logic but swap to async per-day execution
+            # Simpler: call existing process_statements (sync) via to_thread to avoid rewrite of date logic
+            await asyncio.to_thread(
+                process_statements,
+                start_date,
+                end_date,
+                date_range,
+                review_limit,
+                reviews_per_batch,
+                statements_per_batch,
+                max_workers,
+                stop_on_error,
+            )
+            logger.info("Step 1 completed successfully")
+        except Exception as e:
+            logger.error(f"Step 1 failed: {e}")
+            # Don't raise - continue to retry step
+        
+        # Step 2: Retry failed canonicalizations once
+        logger.info("=" * 60)
+        logger.info("STEP 2: Retrying failed canonicalizations (async wrapper)")
+        logger.info("=" * 60)
+        try:
+            retry_count = await asyncio.to_thread(
+                rerun_failed_canonicalizations,
+                None,  # start_date
+                None,  # end_date
+                None,  # limit
+                None,  # error_type
+                False,  # clear_old_failures
+                statements_per_batch,
+                max_workers,
+                stop_on_error,
+            )
+            if retry_count > 0:
+                logger.info(f"Step 2 completed: Successfully reprocessed {retry_count} failed statements")
+            else:
+                logger.info("Step 2 completed: No failed statements to retry")
+        except Exception as e:
+            logger.error(f"Step 2 failed: {e}")
+            # Don't raise - we've done our best
+        
+        logger.info("=" * 60)
+        logger.info("Processing complete - all steps finished")
+        logger.info("=" * 60)
+        
     except Exception as e:
-        logger.error(f"Processing failed: {e}")
+        logger.error(f"Critical error during processing: {e}")
         raise
+    finally:
+        # Clean up connection pools on exit
+        close_connection_pool()
+        await close_async_pool()
+        logger.info("Connection pools closed")
+
+
+if __name__ == "__main__":
+    asyncio.run(main_async())
 
 
 

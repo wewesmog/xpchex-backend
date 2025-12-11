@@ -1,6 +1,8 @@
 """
 Models for canonicalization workflow
 """
+from __future__ import annotations
+
 from enum import Enum
 from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
@@ -111,7 +113,7 @@ class CanonicalizationState(BaseModel):
     enrich_hybrid_results_error: Optional[str] = None
     
     # Tracking
-    node_history: List[node_history] = Field(default_factory=list)
+    node_history: List["node_history"] = Field(default_factory=list)
     error: List[Dict[str, Any]] = Field(default_factory=list)
     
     class Config:
