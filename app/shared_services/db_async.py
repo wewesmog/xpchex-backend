@@ -58,3 +58,4 @@ async def close_async_pool():
             logger.info("Async pool closed")
 
 
+

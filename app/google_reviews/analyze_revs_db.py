@@ -6,7 +6,10 @@ from pydantic.types import T
 from app.models.pydantic_models import ReviewFilter, Review
 from app.google_reviews.get_reviews import get_reviews
 from app.google_reviews.review_analyzer import perform_review_analysis
-from app.google_reviews.save_analyzed_reviews import save_review_analysis, mark_review_analysis_failed
+from app.google_reviews.save_analyzed_reviews import (
+    save_review_analysis, 
+    mark_review_analysis_failed
+)
 from app.shared_services.logger_setup import setup_logger
 
 logger = setup_logger()

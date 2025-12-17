@@ -20,6 +20,15 @@ load_dotenv()
 
 logger = setup_logger()
 
+
+def _env_flag(name: str, default: str = "false") -> bool:
+    """Return True/False for common truthy strings."""
+    return os.getenv(name, default).strip().lower() in ("1", "true", "yes", "on")
+
+
+# Toggle pooling from env; default ON for better performance with concurrency
+USE_CONNECTION_POOLING = _env_flag("DB_USE_POOL", "true")
+
 # Connection pool (thread-safe)
 _connection_pool: Optional[psycopg2.pool.ThreadedConnectionPool] = None
 _pool_lock = threading.Lock()
@@ -27,8 +36,10 @@ _pool_lock = threading.Lock()
 # Thread-local storage for connection reuse within workers
 _thread_local = threading.local()
 
+# postgres connection without pooling
 
-def init_connection_pool(minconn: int = 5, maxconn: int = 50):
+
+def init_connection_pool(minconn: int = 10, maxconn: int = 100):
     """
     Initialize connection pool for PostgreSQL database.
     
@@ -72,7 +83,11 @@ def init_connection_pool(minconn: int = 5, maxconn: int = 50):
     return _connection_pool
 
 
-def get_postgres_connection(table_name: str = None, use_pool: bool = True, reuse_thread_connection: bool = False):
+def get_postgres_connection(
+    table_name: str = None,
+    use_pool: Optional[bool] = None,
+    reuse_thread_connection: bool = False
+):
     """
     Get a PostgreSQL database connection.
     
@@ -84,17 +99,20 @@ def get_postgres_connection(table_name: str = None, use_pool: bool = True, reuse
     (useful for worker threads that make multiple DB calls).
     
     :param table_name: Optional. Name of the table to interact with (not used currently)
-    :param use_pool: If True, use connection pool (default: True)
+    :param use_pool: If True, use connection pool. None -> env default.
     :param reuse_thread_connection: If True, reuse connection within current thread (default: False)
     :return: Connection object
     """
+    # Decide pooling mode once for this call
+    effective_use_pool = USE_CONNECTION_POOLING if use_pool is None else use_pool
+
     # If reuse is requested, check thread-local storage first
     if reuse_thread_connection:
         if hasattr(_thread_local, 'connection'):
             return _thread_local.connection
     
     # Get connection from pool or create new one
-    if use_pool:
+    if effective_use_pool:
         if _connection_pool is None:
             init_connection_pool()
         
@@ -111,7 +129,7 @@ def get_postgres_connection(table_name: str = None, use_pool: bool = True, reuse
             logger.error(f"Error getting connection from pool: {e}")
             raise
     else:
-        # Fallback to direct connection (backward compatibility)
+        # Fallback to direct connection (non-pooled)
         db_host = os.getenv("PGHOST", "localhost")
         db_password = os.getenv("PGPASSWORD", "xpchex_password")
         db_port = os.getenv("PGPORT", "5432")
@@ -133,7 +151,7 @@ def get_postgres_connection(table_name: str = None, use_pool: bool = True, reuse
                 port=db_port,
                 sslmode=db_ssl_mode
             )
-            logger.info(f"Successfully connected to database: {db_name} as user {db_user} at {db_host}:{db_port}")
+            logger.info(f"Successfully connected to database (non-pooled): {db_name} as user {db_user} at {db_host}:{db_port}")
             return conn
         except psycopg2.OperationalError as e:
             logger.error(f"Unable to connect to database. Error: {e}")
@@ -171,11 +189,19 @@ def release_connection(conn):
 
 
 @contextmanager
-def pooled_connection(reuse_thread_connection: bool = False):
+def pooled_connection(reuse_thread_connection: bool = False, use_pool: Optional[bool] = None):
     """
     Context manager that returns a pooled connection and ensures it is
     returned to the pool on exit.
     """
+    effective_use_pool = USE_CONNECTION_POOLING if use_pool is None else use_pool
+
+    # Shortcut to non-pooled connections when pooling is disabled
+    if not effective_use_pool:
+        with non_pooled_connection() as conn:
+            yield conn
+        return
+
     conn = get_postgres_connection(use_pool=True, reuse_thread_connection=reuse_thread_connection)
     try:
         yield conn
@@ -185,6 +211,30 @@ def pooled_connection(reuse_thread_connection: bool = False):
             release_thread_connection()
         else:
             release_connection(conn)
+
+
+@contextmanager
+def non_pooled_connection():
+    """
+    Context manager that creates a new, non-pooled connection and ensures it is
+    closed on exit.
+    """
+    conn = None
+    try:
+        # Get a new, non-pooled connection
+        conn = get_postgres_connection(use_pool=False)
+        yield conn
+    except Exception as e:
+        logger.error(f"Error within non_pooled_connection context: {e}")
+        raise
+    finally:
+        # Close the connection if it was successfully established
+        if conn:
+            try:
+                conn.close()
+                logger.debug("Closed non-pooled connection")
+            except Exception as e:
+                logger.error(f"Error closing non-pooled connection: {e}")
 
 
 def close_connection_pool():
@@ -203,4 +253,3 @@ def close_connection_pool():
                 logger.error(f"Error closing connection pool: {e}")
             finally:
                 _connection_pool = None
-

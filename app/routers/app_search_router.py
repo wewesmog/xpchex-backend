@@ -2,7 +2,7 @@ from fastapi import APIRouter, Query, HTTPException
 from typing import Optional
 from app.google_reviews.app_search import search_app_id
 from app.google_reviews.app_details_scraper import AppDetailsScraper
-from app.shared_services.db import get_postgres_connection
+from app.shared_services.db import get_postgres_connection, pooled_connection
 from psycopg2.extras import RealDictCursor
 import logging
 
@@ -60,8 +60,7 @@ def check_apps_exist(
         existing_ids_set = set()
         matched_by_name = {}
         
-        conn = get_postgres_connection()
-        try:
+        with pooled_connection() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
                 # Check by app_id first - get latest record per app using inserted_on
                 if ids:
@@ -122,9 +121,6 @@ def check_apps_exist(
                                 existing_ids_set.add(row["app_id"])
                                 matched_by_name[name] = row["app_id"]
         
-        finally:
-            conn.close()
-        
         return {
             "existing_ids": list(existing_ids_set),
             "matched_by_name": matched_by_name
@@ -142,8 +138,7 @@ def get_featured_apps(
     Returns up to 4 most recently updated apps that we have in our database.
     """
     try:
-        conn = get_postgres_connection()
-        try:
+        with pooled_connection() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
                 # Get unique apps ordered by most recent inserted_on (latest record per app)
                 cur.execute("""
@@ -207,8 +202,6 @@ def get_featured_apps(
                     "count": len(items),
                     "items": items
                 }
-        finally:
-            conn.close()
     except Exception as e:
         logger.error(f"Error getting featured apps: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error getting featured apps: {str(e)}")
@@ -221,8 +214,7 @@ def get_app_details(app_id: str):
     Returns the latest record for the app (based on inserted_on).
     """
     try:
-        conn = get_postgres_connection()
-        try:
+        with pooled_connection() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
                 # Get latest record for this app_id
                 cur.execute("""
@@ -287,8 +279,6 @@ def get_app_details(app_id: str):
                     "genre_id": row.get('genre_id') or '',
                     "content_rating_description": row.get('content_rating_description') or '',
                 }
-        finally:
-            conn.close()
     except HTTPException:
         raise
     except Exception as e:

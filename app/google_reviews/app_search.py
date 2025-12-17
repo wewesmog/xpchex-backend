@@ -202,6 +202,14 @@ def search_app_id(
     for app_summary in results:
         # Use robust app_id extraction
         app_id = get_app_id_robust(app_summary)
+        # Guard: reject URLs and non-package-looking ids
+        if app_id:
+            if app_id.startswith(("http://", "https://")):
+                # try to extract from URL if it's a Play link, otherwise drop
+                app_id = extract_app_id_from_url(app_id)
+            # basic sanity: must look like a package (contain at least one dot, no spaces, no scheme)
+            if app_id and (" " in app_id or "/" in app_id or app_id.startswith(("http", "www")) or "." not in app_id):
+                app_id = None
         
         # CRITICAL: If app_id is still missing, try fallback search
         if not app_id:

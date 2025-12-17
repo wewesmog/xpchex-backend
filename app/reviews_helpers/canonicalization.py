@@ -273,6 +273,16 @@ async def get_vector_similarity_async(state: CanonicalizationState) -> Canonical
         state.node_history.append(node_history(node_name='vector_similarity', timestamp=datetime.now().isoformat()))
         return state
 
+# Sync wrappers used by older graph-based code paths
+def get_exact_match(state: CanonicalizationState) -> CanonicalizationState:
+    return asyncio.run(get_exact_match_async(state))
+
+def get_lexical_similarity(state: CanonicalizationState) -> CanonicalizationState:
+    return asyncio.run(get_lexical_similarity_async(state))
+
+def get_vector_similarity(state: CanonicalizationState) -> CanonicalizationState:
+    return asyncio.run(get_vector_similarity_async(state))
+
 # Get weighted similarity, 0.3 * pg_trm + 0.7 * vector similarity. 
 # Pick the top 15 from both similarity and vector similarity (already done by the two functions)
 # If statement is appearing both then do  0.3 * pg_trm + 0.7 * vector similarity
@@ -516,7 +526,7 @@ async def enrich_hybrid_results_async(state: CanonicalizationState) -> Canonical
         state.results = f"Enriched {len(enriched_candidates)} candidates for LLM"
         state.node_history.append(node_history(node_name='enrich_hybrid_results', timestamp=datetime.now().isoformat()))
         return state
-        
+
     except Exception as e:
         logger.error(f"Error enriching hybrid results: {e}")
         state.enrich_hybrid_results_error = str(e)
@@ -527,6 +537,10 @@ async def enrich_hybrid_results_async(state: CanonicalizationState) -> Canonical
         })
         state.node_history.append(node_history(node_name='enrich_hybrid_results', timestamp=datetime.now().isoformat()))
         return state
+
+# Sync wrapper for enrich_hybrid_results
+def enrich_hybrid_results(state: CanonicalizationState) -> CanonicalizationState:
+    return asyncio.run(enrich_hybrid_results_async(state))
 
 async def get_llm_input(state: CanonicalizationState) -> CanonicalizationState:
     """Get LLM input for canonicalization (async version)."""

@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Optional, List, Tuple
 import json
 from app.models.pydantic_models import Review, ReviewFilter
-from app.shared_services.db import get_postgres_connection
+from app.shared_services.db import pooled_connection
 from ..shared_services.logger_setup import setup_logger
 
 
@@ -118,8 +118,7 @@ async def get_reviews(filters: ReviewFilter) -> List[Review]:
     # Add limit and offset to params
     params.extend([filters.limit, filters.offset])
     
-    conn = get_postgres_connection()
-    try:
+    with pooled_connection() as conn:
         with conn.cursor() as cur:
             logger.info(f"Executing query: {cur.mogrify(query, tuple(params))}")
             cur.execute(query, tuple(params))
@@ -144,8 +143,3 @@ async def get_reviews(filters: ReviewFilter) -> List[Review]:
                 result.append(Review(**row_dict))
             
             return result
-    except Exception as e:
-        logger.error(f"Error fetching reviews: {str(e)}")
-        raise e
-    finally:
-        conn.close()

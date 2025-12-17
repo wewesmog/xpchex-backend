@@ -10,7 +10,9 @@ from app.routers import positives_router
 from app.routers import actions_router
 from app.routers import sentiments_router
 from app.routers import app_search_router
+from app.routers import general
 from app.shared_services.db import get_postgres_connection
+
 # import CORS
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -56,7 +58,7 @@ app.include_router(positives_router.router)
 app.include_router(actions_router.router)
 app.include_router(sentiments_router.router)
 app.include_router(app_search_router.router)
-
+app.include_router(general.router)
 @app.get("/")
 async def read_root():
     return {"message": "Reviews Service is running!"}
