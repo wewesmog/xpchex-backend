@@ -8,6 +8,7 @@ import ast
 
 from app.shared_services.db import pooled_connection
 import pandas as pd
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -876,7 +877,8 @@ async def _get_reviews_list(
             
             if not data.empty:
                 logger.info(f"List data: {len(data)} rows")
-                # Convert the data to records (list of dictionaries)
+                # Convert NaN/NaT/inf to None so JSON serialization doesn't fail
+                data = data.replace([np.nan, np.inf, -np.inf], None)
                 records = data.to_dict('records')
                 return records
             else:

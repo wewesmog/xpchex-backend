@@ -62,4 +62,10 @@ For example, if a review says "App keeps crashing but customer support was very 
     }}
 }}
 
-Now analyze the provided review and return in the same format. Note that formality_level MUST be one of: 'casual', 'neutral', or 'formal'."""
+Now analyze the provided review and return in the same format.
+
+IMPORTANT CONSTRAINTS:
+- primary_tone MUST be one of: 'apologetic', 'appreciative', 'informative', 'enthusiastic', 'professional', 'empathetic'
+- secondary_tone MUST be one of: 'apologetic', 'appreciative', 'informative', 'enthusiastic', 'professional', 'empathetic', 'neutral', 'friendly', 'casual', or null
+- formality_level MUST be one of: 'casual', 'neutral', 'formal'
+- Do NOT use any other values for these fields."""

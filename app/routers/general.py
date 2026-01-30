@@ -1,5 +1,6 @@
 from fastapi import APIRouter, HTTPException, status
 from app.google_reviews.reviews_scraper import ReviewScraper
+from app.google_reviews.app_details_scraper import AppDetailsScraper
 from app.google_reviews.analyze_revs_db import analyze_reviews
 from app.reviews_helpers.canon_main import (
     get_statements_by_review_ids,
@@ -121,6 +122,8 @@ async def update_app_reviews(
     canon_max_date: Optional[str] = None,
     canon_max_reviews: Optional[int] = None,
     canon_min_reviews: Optional[int] = None,
+    country: str = "ke",
+    lang: str = "en",
 ):
     """Update the app reviews for a given app_id"""
     try:
@@ -134,6 +137,8 @@ async def update_app_reviews(
             canon_max_date=canon_max_date,
             canon_max_reviews=canon_max_reviews,
             canon_min_reviews=canon_min_reviews,
+            country=country,
+            lang=lang,
         )
         return {"message": "App reviews updated successfully", "summary": summary}
     except Exception as e:
@@ -169,6 +174,8 @@ async def update_app_reviews_helper(
     canon_max_date: Optional[str] = None,
     canon_max_reviews: Optional[int] = None,
     canon_min_reviews: Optional[int] = None,
+    country: str = "ke",
+    lang: str = "en",
 ):
     """Get reviews that dont exist in the database and add them, for a given app_id
        once retrieved, canonicalize them"""
@@ -185,17 +192,46 @@ async def update_app_reviews_helper(
         # Track the latest processed review timestamp before fetching to scope downstream work
         latest_before_fetch = get_latest_processed_timestamp(app_id)
 
-        # 1) Fetch from Google Play and store in raw + processed tables
-        with ReviewScraper() as scraper:
-            fetched, processed = scraper.fetch_reviews(
-                app_id=app_id,
-                incremental=True,
-                batch_size=100,
-                lang="en",
-                country="ke",
-            )
-            summary["fetched"] = fetched
-            summary["processed"] = processed
+        # 1) Fetch and store latest app details before fetching reviews (with country fallback)
+        requested_country = (country or "ke").lower()
+        country_hint = app_id.split(".")[0][:2].lower() if app_id else None
+        candidate_countries = [requested_country]
+        if country_hint and country_hint.isalpha() and len(country_hint) == 2 and country_hint != requested_country:
+            candidate_countries.append(country_hint)
+
+        details_saved = False
+        for ctry in candidate_countries:
+            try:
+                with AppDetailsScraper() as details_scraper:
+                    details_scraper.fetch_and_save_app_details(app_id, country=ctry, lang=lang)
+                details_saved = True
+                break
+            except Exception as e:
+                logger.warning(f"App details fetch failed for country={ctry}, will try fallback if available. Error: {e}")
+
+        if not details_saved:
+            raise Exception(f"Failed to fetch app details for {app_id} with countries {candidate_countries}")
+
+        # 2) Fetch from Google Play and store in raw + processed tables
+        fetched = processed = 0
+        for ctry in candidate_countries:
+            try:
+                with ReviewScraper() as scraper:
+                    fetched, processed = scraper.fetch_reviews(
+                        app_id=app_id,
+                        incremental=True,
+                        batch_size=100,
+                        lang=lang,
+                        country=ctry,
+                    )
+                summary["fetched"] = fetched
+                summary["processed"] = processed
+                break
+            except Exception as e:
+                logger.warning(f"Review fetch failed for country={ctry}, will try fallback if available. Error: {e}")
+
+        if fetched == 0 and processed == 0:
+            logger.error(f"No reviews fetched for {app_id} after trying countries {candidate_countries}")
 
         # 2) Analyze newly inserted (or any remaining unanalyzed) reviews for this app
         analyze_min_dt = parse_date_param(analyze_min_date)
@@ -242,8 +278,8 @@ async def update_app_reviews_helper(
             )
             summary["analyzed"] = analyzed_count
 
-        # 3) Canonicalize statements for the newly fetched/analyzed window (async)
-        min_dt, max_dt = get_new_review_date_range(app_id, latest_before_fetch)
+        # 3) Canonicalize statements for any uncanonicalized reviews (not gated by latest fetch)
+        min_dt, max_dt = get_new_review_date_range(app_id, None)
         canon_min_dt_override = parse_date_param(canon_min_date, as_date=True)
         canon_max_dt_override = parse_date_param(canon_max_date, as_date=True)
 

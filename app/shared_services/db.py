@@ -73,14 +73,36 @@ def init_connection_pool(minconn: int = 10, maxconn: int = 100):
                     user=db_user,
                     password=db_password,
                     port=db_port,
-                    sslmode=db_ssl_mode
+                    sslmode=db_ssl_mode,
+                    # Add keepalive settings to prevent connection drops
+                    keepalives=1,
+                    keepalives_idle=30,
+                    keepalives_interval=10,
+                    keepalives_count=5,
+                    # Add connection timeout
+                    connect_timeout=10
                 )
-                logger.info(f"Connection pool initialized: min={minconn}, max={maxconn} for {db_name}@{db_host}:{db_port}")
+                logger.info(f"Connection pool initialized with keepalives: min={minconn}, max={maxconn} for {db_name}@{db_host}:{db_port}")
             except Exception as e:
                 logger.error(f"Failed to initialize connection pool: {e}")
                 raise
     
     return _connection_pool
+
+
+def validate_connection(conn):
+    """
+    Validate that a connection is still alive and working.
+    Returns True if connection is valid, False otherwise.
+    """
+    try:
+        # Try to execute a simple query
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT 1")
+        return True
+    except Exception as e:
+        logger.warning(f"Connection validation failed: {e}")
+        return False
 
 
 def get_postgres_connection(
@@ -109,7 +131,14 @@ def get_postgres_connection(
     # If reuse is requested, check thread-local storage first
     if reuse_thread_connection:
         if hasattr(_thread_local, 'connection'):
-            return _thread_local.connection
+            conn = _thread_local.connection
+            # Validate the connection before returning
+            if validate_connection(conn):
+                return conn
+            else:
+                # Connection is stale, remove it and get a new one
+                logger.warning("Thread-local connection is stale, getting new one")
+                delattr(_thread_local, 'connection')
     
     # Get connection from pool or create new one
     if effective_use_pool:
@@ -117,16 +146,48 @@ def get_postgres_connection(
             init_connection_pool()
         
         try:
-            conn = _connection_pool.getconn()
-            if conn:
-                # Store in thread-local if reuse is requested
-                if reuse_thread_connection:
-                    _thread_local.connection = conn
-                return conn
-            else:
-                raise Exception("Failed to get connection from pool")
+            # Try up to 3 times to get a valid connection from pool
+            max_retries = 3
+            for attempt in range(max_retries):
+                conn = _connection_pool.getconn()
+                if conn:
+                    # Validate connection before returning
+                    if validate_connection(conn):
+                        # Store in thread-local if reuse is requested
+                        if reuse_thread_connection:
+                            _thread_local.connection = conn
+                        return conn
+                    else:
+                        logger.warning(f"Got stale connection from pool (attempt {attempt + 1}/{max_retries}), discarding")
+                        try:
+                            conn.close()
+                        except:
+                            pass
+                        # Continue to next attempt
+                else:
+                    logger.warning(f"Failed to get connection from pool (attempt {attempt + 1}/{max_retries})")
+            
+            # If all pool attempts failed, create a fresh connection as fallback
+            logger.warning("All pooled connections failed validation, creating fresh connection")
+            conn = psycopg2.connect(
+                host=os.getenv("PGHOST", "localhost"),
+                database=os.getenv("PGDATABASE", "xpchex"),
+                user=os.getenv("PGUSER", "xpchex_user"),
+                password=os.getenv("PGPASSWORD", "xpchex_password"),
+                port=os.getenv("PGPORT", "5432"),
+                sslmode=os.getenv("DB_SSL_MODE", "disable"),
+                keepalives=1,
+                keepalives_idle=30,
+                keepalives_interval=10,
+                keepalives_count=5,
+                connect_timeout=10
+            )
+            # Don't put this fresh connection back in the pool
+            logger.info("Created fresh connection outside of pool")
+            return conn
+            
         except Exception as e:
-            logger.error(f"Error getting connection from pool: {e}")
+            logger.error(f"Error getting connection: {e}")
             raise
     else:
         # Fallback to direct connection (non-pooled)
@@ -149,9 +210,16 @@ def get_postgres_connection(
                 user=db_user,
                 password=db_password,
                 port=db_port,
-                sslmode=db_ssl_mode
+                sslmode=db_ssl_mode,
+                # Add keepalive settings to prevent connection drops
+                keepalives=1,
+                keepalives_idle=30,
+                keepalives_interval=10,
+                keepalives_count=5,
+                # Add connection timeout
+                connect_timeout=10
             )
-            logger.info(f"Successfully connected to database (non-pooled): {db_name} as user {db_user} at {db_host}:{db_port}")
+            logger.info(f"Successfully connected to database (non-pooled) with keepalives: {db_name} as user {db_user} at {db_host}:{db_port}")
             return conn
         except psycopg2.OperationalError as e:
             logger.error(f"Unable to connect to database. Error: {e}")

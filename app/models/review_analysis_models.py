@@ -373,7 +373,7 @@ class ResponseContext(BaseModel):
 
 class ResponseTone(BaseModel):
     primary_tone: Literal["apologetic", "appreciative", "informative", "enthusiastic", "professional", "empathetic"]
-    secondary_tone: Optional[Literal["apologetic", "appreciative", "informative", "enthusiastic", "professional", "empathetic"]] = None
+    secondary_tone: Optional[Literal["apologetic", "appreciative", "informative", "enthusiastic", "professional", "empathetic", "neutral", "friendly", "casual"]] = None
     formality_level: Literal["casual", "neutral", "formal"]
     personalization_level: float  # 0-1, how personalized the response should be
 

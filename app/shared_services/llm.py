@@ -10,6 +10,7 @@ from instructor import patch
 import logging
 import asyncio
 import time
+import re
 from openai import APIError, RateLimitError
 
 logger = logging.getLogger(__name__)
@@ -31,7 +32,23 @@ async_openai_client = instructor.patch(AsyncOpenAI(api_key=OPENAI_API_KEY), mode
 
 # Configure Google Gemini
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
-gemini_client = genai.Client(api_key=GOOGLE_API_KEY) if GOOGLE_API_KEY else None
+
+# Try to use instructor with Gemini, fallback to native client
+if GOOGLE_API_KEY:
+    try:
+        gemini_instructor_client = instructor.from_provider(
+            "google/gemini-2.0-flash-lite",
+            api_key=GOOGLE_API_KEY
+        )
+    except Exception as e:
+        logger.warning(f"Could not initialize instructor for Gemini: {e}, using native client")
+        gemini_instructor_client = None
+    
+    # Always initialize native client as fallback
+    gemini_client = genai.Client(api_key=GOOGLE_API_KEY)
+else:
+    gemini_instructor_client = None
+    gemini_client = None
 
 def call_llm_api_openai(messages: List[Dict[str, str]], 
                 model: str = "gpt-4o",
@@ -94,7 +111,7 @@ def call_llm_api_openai(messages: List[Dict[str, str]],
 # Patch Groq() with instructor, this is where the magic happens!
 groq_client = instructor.from_groq(Groq(api_key=os.getenv("GROQ_API_KEY")), mode=instructor.Mode.JSON)
 
-def call_llm_api_1(messages: List[Dict[str, str]],
+def call_llm_api(messages: List[Dict[str, str]],
                 model: str = "llama3-70b-8192",
                 response_format: Optional[BaseModel] = None,
                 max_tokens: int = 2000,
@@ -301,11 +318,7 @@ def call_llm_api(messages: List[Dict[str, str]],
         time.sleep(rate_limit_delay)
     
     try:
-        if not gemini_client:
-            raise ValueError("GOOGLE_API_KEY not set")
-        
         # Convert OpenAI message format to Gemini format
-        # Build contents string from messages
         contents_parts = []
         for msg in messages:
             role = msg.get('role', 'user')
@@ -319,20 +332,41 @@ def call_llm_api(messages: List[Dict[str, str]],
         
         contents = "\n".join(contents_parts)
         
-        # Generate content using new SDK
+        # Use instructor if available and response_format is requested
+        if response_format and gemini_instructor_client:
+            try:
+                response = gemini_instructor_client.create(
+                    response_model=response_format,
+                    messages=[{"role": "user", "content": contents}],
+                    # Note: Gemini doesn't accept max_tokens, it uses max_output_tokens
+                    # Instructor should handle this internally
+                )
+                return response
+            except Exception as e:
+                logger.warning(f"Instructor failed, falling back to native client: {e}")
+        
+        # Fallback to native Gemini client
+        if not gemini_client:
+            raise ValueError("GOOGLE_API_KEY not set")
+            
         response = gemini_client.models.generate_content(
             model=mode,
             contents=contents
         )
         
-        # Extract text from response
         response_text = response.text
         
-        # If structured output requested, parse JSON
+        # If structured output requested, parse JSON manually
         if response_format:
             import json
             try:
-                response_json = json.loads(response_text)
+                # Strip markdown code blocks if present
+                response_text_clean = response_text.strip()
+                if response_text_clean.startswith('```'):
+                    response_text_clean = re.sub(r'^```(?:json)?\s*\n?', '', response_text_clean)
+                    response_text_clean = re.sub(r'\n?```\s*$', '', response_text_clean)
+                
+                response_json = json.loads(response_text_clean)
                 return response_format(**response_json)
             except json.JSONDecodeError as e:
                 logger.error(f"Failed to parse JSON response from Gemini: {e}")
@@ -381,9 +415,6 @@ async def call_llm_api_async(messages: List[Dict[str, str]],
         await asyncio.sleep(rate_limit_delay)
     
     try:
-        if not gemini_client:
-            raise ValueError("GOOGLE_API_KEY not set")
-        
         # Convert OpenAI message format to Gemini format
         contents_parts = []
         for msg in messages:
@@ -398,22 +429,45 @@ async def call_llm_api_async(messages: List[Dict[str, str]],
         
         contents = "\n".join(contents_parts)
         
-        # Generate content using new SDK (run in thread pool since SDK is sync)
+        # Use instructor if available and response_format is requested
+        # Run in thread pool since instructor's Gemini client is sync
+        if response_format and gemini_instructor_client:
+            try:
+                response = await asyncio.to_thread(
+                    gemini_instructor_client.create,
+                    response_model=response_format,
+                    messages=[{"role": "user", "content": contents}],
+                    # Note: Gemini doesn't accept max_tokens, it uses max_output_tokens
+                    # Instructor should handle this internally
+                )
+                return response
+            except Exception as e:
+                logger.warning(f"Instructor failed, falling back to native client: {e}")
+        
+        # Fallback to native Gemini client
+        if not gemini_client:
+            raise ValueError("GOOGLE_API_KEY not set")
+        
+        # Run in thread pool since SDK is sync
         response = await asyncio.to_thread(
             gemini_client.models.generate_content,
             model=mode,
             contents=contents
         )
         
-        # Extract text from response
         response_text = response.text
         
-        # If structured output requested, parse JSON
+        # If structured output requested, parse JSON manually
         if response_format:
             import json
             try:
-                response_json = json.loads(response_text)
-                # Convert to Pydantic model
+                # Strip markdown code blocks if present
+                response_text_clean = response_text.strip()
+                if response_text_clean.startswith('```'):
+                    response_text_clean = re.sub(r'^```(?:json)?\s*\n?', '', response_text_clean)
+                    response_text_clean = re.sub(r'\n?```\s*$', '', response_text_clean)
+                
+                response_json = json.loads(response_text_clean)
                 return response_format(**response_json)
             except json.JSONDecodeError as e:
                 logger.error(f"Failed to parse JSON response from Gemini: {e}")

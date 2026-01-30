@@ -131,15 +131,27 @@ def check_apps_exist(
 
 @router.get("/featured")
 def get_featured_apps(
-    limit: int = Query(4, ge=1, le=10, description="Max featured apps to return (default: 4)")
+    limit: int = Query(6, ge=1, le=50, description="Max items per page (default: 6, max: 50)"),
+    offset: int = Query(0, ge=0, description="Offset for pagination")
 ):
     """
-    Get featured apps from app_details_history.
-    Returns up to 4 most recently updated apps that we have in our database.
+    Get featured apps from app_details_history with simple pagination.
+    - limit: up to 4 items per page
+    - offset: starting offset
+    Returns latest app details per app_id ordered by app_updated_at desc.
     """
     try:
         with pooled_connection() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                # Total distinct apps for pagination metadata
+                cur.execute("""
+                    SELECT COUNT(DISTINCT app_id) AS total_apps
+                    FROM app_details_history
+                    WHERE app_id IS NOT NULL
+                """)
+                total_row = cur.fetchone()
+                total_count = int(total_row["total_apps"] or 0) if total_row else 0
+
                 # Get unique apps ordered by most recent inserted_on (latest record per app)
                 cur.execute("""
                     WITH ranked_apps AS (
@@ -175,8 +187,8 @@ def get_featured_apps(
                         COALESCE(icon_url, '') AS icon_url
                     FROM ranked_apps
                     ORDER BY app_updated_at DESC NULLS LAST
-                    LIMIT %s
-                """, (limit,))
+                    LIMIT %s OFFSET %s
+                """, (limit, offset))
                 
                 rows = cur.fetchall()
                 
@@ -199,7 +211,7 @@ def get_featured_apps(
                 
                 return {
                     "status": "success",
-                    "count": len(items),
+                    "count": total_count,
                     "items": items
                 }
     except Exception as e:
