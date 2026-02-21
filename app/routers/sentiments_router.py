@@ -7,19 +7,11 @@ from dateutil.relativedelta import relativedelta
 import ast
 
 from app.shared_services.db import pooled_connection
+from app.shared_services.date_ranges import TimeRange, get_date_range
 import pandas as pd
 import numpy as np
 
 logger = logging.getLogger(__name__)
-
-class TimeRange(str, Enum):
-    LAST_7_DAYS = "last_7_days"
-    LAST_30_DAYS = "last_30_days" 
-    LAST_90_DAYS = "last_90_days"
-    LAST_6_MONTHS = "last_6_months"
-    LAST_12_MONTHS = "last_12_months"
-    THIS_YEAR = "this_year"
-    ALL_TIME = "all_time"
 
 class Granularity(str, Enum):
     DAILY = "daily"
@@ -44,7 +36,7 @@ async def get_sentiments_analytics(
     
     Automatic granularity rules:
     - Last 7 days: Daily aggregation
-    - Last 30-90 days: Weekly aggregation  
+    - Last 30 days–3 months: Weekly aggregation  
     - Last 6-12 months: Monthly aggregation
     - This year: Monthly aggregation
     - All time: Dynamic (yearly if >1 year of data, monthly otherwise)
@@ -56,7 +48,7 @@ async def get_sentiments_analytics(
         granularity = _get_granularity_for_range(time_range)
         
         # Calculate date range
-        start_date, end_date = _calculate_date_range(time_range)
+        start_date, end_date = get_date_range(time_range)
         logger.info(f"Date range for {time_range}: {start_date} to {end_date}")
         
         # Get aggregated data based on granularity
@@ -96,7 +88,7 @@ async def list_segments(
 ):
     """List segments for a given date range"""
     try:
-        start_date, end_date = _calculate_date_range(time_range)
+        start_date, end_date = get_date_range(time_range)
         segments = await _get_segments_data(app_id, start_date, end_date)
         return {
             "status": "success",
@@ -121,7 +113,7 @@ async def list_all_segments(
 ):
     """List ALL segments for word cloud analysis (no limit)"""
     try:
-        start_date, end_date = _calculate_date_range(time_range)
+        start_date, end_date = get_date_range(time_range)
         segments = await _get_all_segments_data(app_id, start_date, end_date)
         return {
             "status": "success",
@@ -146,7 +138,7 @@ async def list_emotions(
 ):
     """List emotions for a given date range"""
     try:
-        start_date, end_date = _calculate_date_range(time_range)
+        start_date, end_date = get_date_range(time_range)
         emotions = await _get_emotions_data(app_id, start_date, end_date)
         return {
             "status": "success",
@@ -178,7 +170,7 @@ async def list_reviews(
     """List individual reviews with filtering by time range"""
     try:
         # Calculate date range based on time_range parameter
-        start_date, end_date = _calculate_date_range(time_range)
+        start_date, end_date = get_date_range(time_range)
         
         # Get reviews data filtered by date range
         reviews = await _get_reviews_list(
@@ -230,61 +222,15 @@ def _get_granularity_for_range(time_range: TimeRange) -> Granularity:
     """Auto-determine granularity based on time range"""
     if time_range in [TimeRange.LAST_7_DAYS]:
         return Granularity.DAILY
-    elif time_range in [TimeRange.LAST_30_DAYS, TimeRange.LAST_90_DAYS]:
+    elif time_range == TimeRange.LAST_30_DAYS:
         return Granularity.WEEKLY
-    elif time_range in [TimeRange.LAST_6_MONTHS, TimeRange.LAST_12_MONTHS, TimeRange.THIS_YEAR]:
+    elif time_range in [TimeRange.LAST_3_MONTHS, TimeRange.LAST_6_MONTHS, TimeRange.LAST_12_MONTHS, TimeRange.THIS_YEAR]:
         return Granularity.MONTHLY
     elif time_range == TimeRange.ALL_TIME:
         # For all time, dynamically determine based on data span
         return _get_alltime_granularity()
     else:
         return Granularity.MONTHLY
-
-def _calculate_date_range(time_range: TimeRange) -> tuple[datetime, datetime]:
-    """Calculate start and end dates based on time range"""
-    now = datetime.now()
-    
-    if time_range == TimeRange.LAST_7_DAYS:
-        # Daily granularity: up to yesterday end
-        end_date = now.replace(hour=23, minute=59, second=59, microsecond=999999) - timedelta(days=1)
-        start_date = end_date - timedelta(days=6)  # 7 days total including end_date
-    elif time_range == TimeRange.LAST_30_DAYS:
-        # Weekly granularity: up to last complete week (Sunday)
-        days_since_sunday = (now.weekday() + 1) % 7
-        last_sunday = now - timedelta(days=days_since_sunday)
-        end_date = last_sunday.replace(hour=23, minute=59, second=59, microsecond=999999)
-        start_date = end_date - timedelta(days=29)  # 30 days total
-    elif time_range == TimeRange.LAST_90_DAYS:
-        # Weekly granularity: up to last complete week (Sunday)
-        days_since_sunday = (now.weekday() + 1) % 7
-        last_sunday = now - timedelta(days=days_since_sunday)
-        end_date = last_sunday.replace(hour=23, minute=59, second=59, microsecond=999999)
-        start_date = end_date - timedelta(days=89)  # 90 days total
-    elif time_range == TimeRange.LAST_6_MONTHS:
-        # Monthly granularity: include current month
-        end_date = now  # Include current month
-        start_date = (now - relativedelta(months=6)).replace(day=1, hour=0, minute=0, second=0, microsecond=0)  # Start of 6 months ago
-    elif time_range == TimeRange.LAST_12_MONTHS:
-        # Monthly granularity: include current month
-        end_date = now  # Include current month
-        start_date = (now - relativedelta(months=12)).replace(day=1, hour=0, minute=0, second=0, microsecond=0)  # Start of 12 months ago
-    elif time_range == TimeRange.THIS_YEAR:
-        # Monthly granularity: from Jan 1 to end of last complete month
-        start_date = datetime(now.year, 1, 1)
-        first_day_current_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        end_date = first_day_current_month - timedelta(seconds=1)  # End of last month
-    elif time_range == TimeRange.ALL_TIME:
-        # Define ALL_TIME as from Jan 1 of the previous year up to end of last complete month
-        start_date = datetime(now.year - 1, 1, 1)
-        first_day_current_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        end_date = first_day_current_month - timedelta(seconds=1)
-    else:
-        # Default: up to end of last complete month
-        first_day_current_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        end_date = first_day_current_month - timedelta(seconds=1)
-        start_date = end_date - relativedelta(years=5)
-    
-    return start_date, end_date
 
 def _get_alltime_granularity() -> Granularity:
     """

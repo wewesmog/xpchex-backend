@@ -8,20 +8,11 @@ from enum import Enum
 from dateutil.relativedelta import relativedelta
 import ast
 
-
 from app.shared_services.db import pooled_connection
+from app.shared_services.date_ranges import TimeRange, get_date_range
 import pandas as pd
 
 logger = logging.getLogger(__name__)
-
-class TimeRange(str, Enum):
-    LAST_7_DAYS = "last_7_days"
-    LAST_30_DAYS = "last_30_days" 
-    LAST_90_DAYS = "last_90_days"
-    LAST_6_MONTHS = "last_6_months"
-    LAST_12_MONTHS = "last_12_months"
-    THIS_YEAR = "this_year"
-    ALL_TIME = "all_time"
 
 class Granularity(str, Enum):
     DAILY = "daily"
@@ -46,7 +37,7 @@ async def get_positives_analytics(
     
     Automatic granularity rules:
     - Last 7 days: Daily aggregation
-    - Last 30-90 days: Weekly aggregation  
+    - Last 30 days–3 months: Weekly aggregation  
     - Last 6-12 months: Monthly aggregation
     - This year: Monthly aggregation
     - All time: Dynamic (yearly if >1 year of data, monthly otherwise)
@@ -54,23 +45,23 @@ async def get_positives_analytics(
     Granularity is automatically determined and cannot be overridden.
     """
     try:
-        # Auto-determine granularity based on time range
-        granularity = _get_granularity_for_range(time_range)
+        # Auto-determine granularity based on time range (app_id needed for all-time)
+        granularity = _get_granularity_for_range(time_range, app_id)
         
         # Calculate date range
-        start_date, end_date = _calculate_date_range(time_range)
+        start_date, end_date = get_date_range(time_range)
         
-        # Get aggregated data based on granularity
+        # Get aggregated data based on granularity (scoped by app_id)
         if granularity == Granularity.DAILY:
-            data = await _get_aggregated_positives_data(start_date, end_date, granularity, severity, category)
+            data = await _get_aggregated_positives_data(app_id, start_date, end_date, granularity, severity, category)
         elif granularity == Granularity.WEEKLY:
-            data = await _get_aggregated_positives_data(start_date, end_date, granularity, severity, category)
+            data = await _get_aggregated_positives_data(app_id, start_date, end_date, granularity, severity, category)
         elif granularity == Granularity.MONTHLY:
-            data = await _get_aggregated_positives_data(start_date, end_date, granularity, severity, category)
+            data = await _get_aggregated_positives_data(app_id, start_date, end_date, granularity, severity, category)
         elif granularity == Granularity.YEARLY:
-            data = await _get_aggregated_positives_data(start_date, end_date, granularity, severity, category)
+            data = await _get_aggregated_positives_data(app_id, start_date, end_date, granularity, severity, category)
         else:
-            data = await _get_aggregated_positives_data(start_date, end_date, granularity, severity, category)
+            data = await _get_aggregated_positives_data(app_id, start_date, end_date, granularity, severity, category)
             
 
         return {
@@ -104,10 +95,11 @@ async def list_positives(
     """List individual positives with filtering by time range"""
     try:
         # Calculate date range based on time_range parameter
-        start_date, end_date = _calculate_date_range(time_range)
+        start_date, end_date = get_date_range(time_range)
         
-        # Get positives data filtered by date range
+        # Get positives data filtered by date range and app_id
         positives = await _get_positives_list(
+            app_id=app_id,
             start_date=start_date, 
             end_date=end_date, 
             order_by=order_by,
@@ -119,6 +111,7 @@ async def list_positives(
         
         # Get total count for pagination
         total_count = await _get_positives_list_count(
+            app_id=app_id,
             start_date=start_date,
             end_date=end_date,
             impact_level=impact_level,
@@ -149,104 +142,47 @@ async def list_positives(
             detail=f"Error listing positives: {str(e)}"
         )
 # Helper functions
-def _get_granularity_for_range(time_range: TimeRange) -> Granularity:
-    """Auto-determine granularity based on time range"""
-    if time_range in [TimeRange.LAST_7_DAYS]:
-        return Granularity.DAILY
-    elif time_range in [TimeRange.LAST_30_DAYS, TimeRange.LAST_90_DAYS]:
-        return Granularity.WEEKLY
-    elif time_range in [TimeRange.LAST_6_MONTHS, TimeRange.LAST_12_MONTHS]:
-        return Granularity.MONTHLY
-    elif time_range in [TimeRange.THIS_YEAR]:
-        return Granularity.MONTHLY
-    elif time_range == TimeRange.ALL_TIME:
-        # For all time, dynamically determine based on data span
-        return _get_alltime_granularity()
-    else:
-        return Granularity.MONTHLY
-
-def _calculate_date_range(time_range: TimeRange) -> tuple[datetime, datetime]:
-    """Calculate start and end dates based on time range"""
-    now = datetime.now()
-    
+def _get_granularity_for_range(time_range: TimeRange, app_id: Optional[str] = None) -> Granularity:
+    """Auto-determine granularity based on time range (aligned with shared date_ranges). app_id required for ALL_TIME."""
     if time_range == TimeRange.LAST_7_DAYS:
-        # Daily granularity: up to yesterday end
-        end_date = now.replace(hour=23, minute=59, second=59, microsecond=999999) - timedelta(days=1)
-        start_date = end_date - timedelta(days=6)  # 7 days total including end_date
+        return Granularity.DAILY
     elif time_range == TimeRange.LAST_30_DAYS:
-        # Weekly granularity: up to last complete week (Sunday)
-        days_since_sunday = (now.weekday() + 1) % 7  # Monday=0, so Sunday=6 -> (6+1)%7=0
-        last_sunday = now - timedelta(days=days_since_sunday)
-        end_date = last_sunday.replace(hour=23, minute=59, second=59, microsecond=999999)
-        start_date = end_date - timedelta(days=29)  # 30 days total
-    elif time_range == TimeRange.LAST_90_DAYS:
-        # Weekly granularity: up to last complete week (Sunday)
-        days_since_sunday = (now.weekday() + 1) % 7
-        last_sunday = now - timedelta(days=days_since_sunday)
-        end_date = last_sunday.replace(hour=23, minute=59, second=59, microsecond=999999)
-        start_date = end_date - timedelta(days=89)  # 90 days total
-    elif time_range == TimeRange.LAST_6_MONTHS:
-        # Monthly granularity: up to last complete month
-        first_day_current_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        end_date = first_day_current_month - timedelta(seconds=1)  # End of last month
-        start_date = (first_day_current_month - relativedelta(months=6)).replace(day=1)  # Start of 6 months ago
-    elif time_range == TimeRange.LAST_12_MONTHS:
-        # Monthly granularity: up to last complete month
-        first_day_current_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        end_date = first_day_current_month - timedelta(seconds=1)  # End of last month
-        start_date = (first_day_current_month - relativedelta(months=12)).replace(day=1)  # Start of 12 months ago
-    elif time_range == TimeRange.THIS_YEAR:
-        # Monthly granularity: from Jan 1 to end of last complete month
-        start_date = datetime(now.year, 1, 1)
-        first_day_current_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        end_date = first_day_current_month - timedelta(seconds=1)  # End of last month
+        return Granularity.WEEKLY
+    elif time_range in [TimeRange.LAST_3_MONTHS, TimeRange.LAST_6_MONTHS, TimeRange.LAST_12_MONTHS, TimeRange.THIS_YEAR]:
+        return Granularity.MONTHLY
     elif time_range == TimeRange.ALL_TIME:
-        # Yearly granularity: up to end of last complete month
-        first_day_current_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        end_date = first_day_current_month - timedelta(seconds=1)  # End of last month
-        start_date = end_date - relativedelta(years=5)
+        return _get_alltime_granularity(app_id)
     else:
-        # Default: up to end of last complete month
-        first_day_current_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        end_date = first_day_current_month - timedelta(seconds=1)
-        start_date = end_date - relativedelta(years=5)
-    
-    return start_date, end_date
+        return Granularity.MONTHLY
 
-def _get_alltime_granularity() -> Granularity:
+def _get_alltime_granularity(app_id: Optional[str] = None) -> Granularity:
     """
-    Dynamically determine granularity for all-time data based on data span.
-    If the app has been collecting data for more than 1 year, use yearly aggregation.
-    Otherwise, use monthly aggregation.
+    Dynamically determine granularity for all-time data based on data span for this app.
+    Uses processed_app_reviews (has app_id) for positives.
     """
     try:
-        # Get the minimum date from the database synchronously
+        if not app_id:
+            return Granularity.MONTHLY
         query = """
-        SELECT MIN(REVIEW_CREATED_AT) FROM vw_flattened_issues
+        SELECT MIN(review_created_at) FROM processed_app_reviews WHERE app_id = %s
         """
         with pooled_connection() as conn:
-            result = pd.read_sql(query, conn)
+            result = pd.read_sql(query, conn, params=(str(app_id),))
             if not result.empty and result.iloc[0, 0] is not None:
                 min_date = result.iloc[0, 0]
                 current_date = datetime.now()
-                
-                # Calculate the difference in years
                 years_diff = (current_date - min_date).days / 365.25
-                
                 if years_diff > 1:
                     return Granularity.YEARLY
-                else:
-                    return Granularity.MONTHLY
-            else:
-                # If no data found, default to monthly
                 return Granularity.MONTHLY
+            return Granularity.MONTHLY
     except Exception as e:
         logger.warning(f"Error determining all-time granularity: {str(e)}. Defaulting to monthly.")
         return Granularity.MONTHLY
 
 # Automatic granularity assignment based on time range:
 # - Last 7 days: Daily aggregation
-# - Last 30-90 days: Weekly aggregation  
+# - Last 30 days–3 months: Weekly aggregation  
 # - Last 6-12 months: Monthly aggregation
 # - This year: Monthly aggregation
 # - All time: Dynamic (yearly if >1 year of data, monthly otherwise)
@@ -257,6 +193,7 @@ def _get_alltime_granularity() -> Granularity:
 
 
 async def _get_aggregated_positives_data(
+    app_id: str,
     start_date: datetime,
     end_date: datetime,
     aggregation_level: str,
@@ -264,7 +201,8 @@ async def _get_aggregated_positives_data(
     category: Optional[str] = None
 ):
     """
-    Get aggregated positives data for a given date range and aggregation level.
+    Get aggregated positives data for a given app_id, date range and aggregation level.
+    Scoped by app_id (processed_app_reviews has app_id).
     """
     
     # Map aggregation levels to SQL DATE_TRUNC arguments
@@ -279,6 +217,7 @@ async def _get_aggregated_positives_data(
         raise ValueError("Invalid aggregation level. Must be 'daily', 'weekly', 'monthly', or 'yearly'.")
 
     trunc_level = aggregation_map[aggregation_level]
+    app_id = str(app_id)
 
     base_query = f"""
     WITH POSITIVES AS (
@@ -291,7 +230,7 @@ async def _get_aggregated_positives_data(
             processed_app_reviews pr,
             jsonb_array_elements(pr.latest_analysis->'positive_feedback'->'positive_mentions') AS positive_mentions
         WHERE
-            DATE(pr.review_created_at) BETWEEN %s AND %s
+            pr.app_id = %s AND DATE(pr.review_created_at) BETWEEN %s AND %s
             -- Dynamic filters will be added here
     ),
     CANONICAL_STATEMENTS AS (
@@ -326,10 +265,9 @@ async def _get_aggregated_positives_data(
     """
 
     where_parts = []
-    params = [start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d')]
+    params = [app_id, start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d')]
 
     if category:
-        # Handle comma-separated severity values
         category_list = [s.strip() for s in category.split(',')]
         placeholders = ', '.join(['%s'] * len(category_list))
         where_parts.append(f"category IN ({placeholders})")
@@ -411,6 +349,7 @@ async def _get_aggregated_positives_data(
 #     return await _get_issues_data(start_date, end_date, 'monthly', ...)
 
 async def _get_positives_list(
+    app_id: str,
     start_date: datetime,
     end_date: datetime,
     order_by: str = 'total_reviews',
@@ -420,7 +359,7 @@ async def _get_positives_list(
     offset: Optional[int] = None
 ):
     """
-    Get a filtered and aggregated list of positives.
+    Get a filtered and aggregated list of positives for this app. Scoped by app_id.
     """
     
     # 1. Input Validation for literal values
@@ -432,7 +371,8 @@ async def _get_positives_list(
             detail=f"Invalid order_by column. Must be one of: {', '.join(valid_sort_columns)}"
         )
     
-    # 2. SQL Query using your provided query
+    app_id = str(app_id)
+    # 2. SQL Query (scoped by app_id)
     base_query = """
     WITH POSITIVES AS (
         SELECT
@@ -449,7 +389,7 @@ async def _get_positives_list(
             processed_app_reviews pr,
             jsonb_array_elements(pr.latest_analysis->'positive_feedback'->'positive_mentions') AS positive_mentions
         WHERE
-            DATE(pr.review_created_at) BETWEEN %s AND %s
+            pr.app_id = %s AND DATE(pr.review_created_at) BETWEEN %s AND %s
             -- Dynamic filters will be added here
     ),
     CANONICAL_STATEMENTSS AS (
@@ -515,7 +455,7 @@ async def _get_positives_list(
     
     # 3. Build WHERE clause and parameter list
     where_parts = []
-    params = [start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d')]
+    params = [app_id, start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d')]
 
     if impact_level:
         # Handle comma-separated impact_level values
@@ -610,23 +550,26 @@ async def _get_positives_list(
 
 
 async def _get_minimum_date(app_id: str):
-    """Get minimum date for a given app_id"""
-    query = f"""
-    SELECT MIN(REVIEW_CREATED_AT) FROM vw_flattened_issues WHERE app_id = %s
+    """Get minimum date for a given app_id. Positives use processed_app_reviews (has app_id)."""
+    query = """
+    SELECT MIN(review_created_at) FROM processed_app_reviews WHERE app_id = %s
     """
-    return pd.read_sql(query, get_postgres_connection(), params=(app_id,))
+    with pooled_connection() as conn:
+        return pd.read_sql(query, conn, params=(str(app_id),))
 
 async def _get_positives_list_count(
+    app_id: str,
     start_date: datetime,
     end_date: datetime,
     impact_level: Optional[str] = None,
     category: Optional[str] = None
 ):
     """
-    Get the count of distinct positives with optional filters.
+    Get the count of distinct positives with optional filters. Scoped by app_id.
     """
     
-    # SQL Query to get the count of distinct positives
+    app_id = str(app_id)
+    # SQL Query to get the count of distinct positives (scoped by app_id)
     base_query = """
     SELECT
         COUNT(*) AS count
@@ -646,7 +589,7 @@ async def _get_positives_list_count(
                 processed_app_reviews pr,
                 jsonb_array_elements(pr.latest_analysis->'positive_feedback'->'positive_mentions') AS positive_mentions
             WHERE
-                DATE(pr.review_created_at) BETWEEN %s AND %s
+                pr.app_id = %s AND DATE(pr.review_created_at) BETWEEN %s AND %s
                 -- Dynamic filters will be added here
         ),
         CANONICAL_STATEMENTSS AS (
@@ -680,7 +623,7 @@ async def _get_positives_list_count(
     
     # Build WHERE clause and parameter list
     where_parts = []
-    params = [start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d')]
+    params = [app_id, start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d')]
 
     if category:
         where_parts.append("B.category = %s")

@@ -7,18 +7,10 @@ from dateutil.relativedelta import relativedelta
 import ast
 
 from app.shared_services.db import pooled_connection
+from app.shared_services.date_ranges import TimeRange, get_date_range
 import pandas as pd
 
 logger = logging.getLogger(__name__)
-
-class TimeRange(str, Enum):
-    LAST_7_DAYS = "last_7_days"
-    LAST_30_DAYS = "last_30_days" 
-    LAST_90_DAYS = "last_90_days"
-    LAST_6_MONTHS = "last_6_months"
-    LAST_12_MONTHS = "last_12_months"
-    THIS_YEAR = "this_year"
-    ALL_TIME = "all_time"
 
 class Granularity(str, Enum):
     DAILY = "daily"
@@ -43,7 +35,7 @@ async def get_actions_analytics(
     
     Automatic granularity rules:
     - Last 7 days: Daily aggregation
-    - Last 30-90 days: Weekly aggregation  
+    - Last 30 days–3 months: Weekly aggregation  
     - Last 6-12 months: Monthly aggregation
     - This year: Monthly aggregation
     - All time: Dynamic (yearly if >1 year of data, monthly otherwise)
@@ -51,23 +43,23 @@ async def get_actions_analytics(
     Granularity is automatically determined and cannot be overridden.
     """
     try:
-        # Auto-determine granularity based on time range
-        granularity = _get_granularity_for_range(time_range)
+        # Auto-determine granularity based on time range (app_id needed for all-time)
+        granularity = _get_granularity_for_range(time_range, app_id)
         
         # Calculate date range
-        start_date, end_date = _calculate_date_range(time_range)
+        start_date, end_date = get_date_range(time_range)
         
-        # Get aggregated data based on granularity
+        # Get aggregated data based on granularity (scoped by app_id)
         if granularity == Granularity.DAILY:
-            actions_data = await _get_aggregated_actions_data(start_date, end_date, granularity, estimated_effort, suggested_timeline)
+            actions_data = await _get_aggregated_actions_data(app_id, start_date, end_date, granularity, estimated_effort, suggested_timeline)
         elif granularity == Granularity.WEEKLY:
-            actions_data = await _get_aggregated_actions_data(start_date, end_date, granularity, estimated_effort, suggested_timeline)
+            actions_data = await _get_aggregated_actions_data(app_id, start_date, end_date, granularity, estimated_effort, suggested_timeline)
         elif granularity == Granularity.MONTHLY:
-            actions_data = await _get_aggregated_actions_data(start_date, end_date, granularity, estimated_effort, suggested_timeline)
+            actions_data = await _get_aggregated_actions_data(app_id, start_date, end_date, granularity, estimated_effort, suggested_timeline)
         elif granularity == Granularity.YEARLY:
-            actions_data = await _get_aggregated_actions_data(start_date, end_date, granularity, estimated_effort, suggested_timeline)
+            actions_data = await _get_aggregated_actions_data(app_id, start_date, end_date, granularity, estimated_effort, suggested_timeline)
         else:
-            actions_data = await _get_aggregated_actions_data(start_date, end_date, granularity, estimated_effort, suggested_timeline)
+            actions_data = await _get_aggregated_actions_data(app_id, start_date, end_date, granularity, estimated_effort, suggested_timeline)
             
 
         return {
@@ -103,10 +95,11 @@ async def list_actions(
     """List individual actions with filtering by time range"""
     try:
         # Calculate date range based on time_range parameter
-        start_date, end_date = _calculate_date_range(time_range)
+        start_date, end_date = get_date_range(time_range)
         
-        # Get actions data filtered by date range
+        # Get actions data filtered by date range and app_id
         actions = await _get_actions_list(
+            app_id=app_id,
             start_date=start_date, 
             end_date=end_date, 
             order_by=order_by,
@@ -120,6 +113,7 @@ async def list_actions(
         
         # Get total count for pagination
         total_count = await _get_actions_list_count(
+            app_id=app_id,
             start_date=start_date,
             end_date=end_date,
             estimated_effort=estimated_effort,
@@ -152,104 +146,47 @@ async def list_actions(
             detail=f"Error listing actions: {str(e)}"
         )
 # Helper functions
-def _get_granularity_for_range(time_range: TimeRange) -> Granularity:
-    """Auto-determine granularity based on time range"""
-    if time_range in [TimeRange.LAST_7_DAYS]:
-        return Granularity.DAILY
-    elif time_range in [TimeRange.LAST_30_DAYS, TimeRange.LAST_90_DAYS]:
-        return Granularity.WEEKLY
-    elif time_range in [TimeRange.LAST_6_MONTHS, TimeRange.LAST_12_MONTHS]:
-        return Granularity.MONTHLY
-    elif time_range in [TimeRange.THIS_YEAR]:
-        return Granularity.MONTHLY
-    elif time_range == TimeRange.ALL_TIME:
-        # For all time, dynamically determine based on data span
-        return _get_alltime_granularity()
-    else:
-        return Granularity.MONTHLY
-
-def _calculate_date_range(time_range: TimeRange) -> tuple[datetime, datetime]:
-    """Calculate start and end dates based on time range"""
-    now = datetime.now()
-    
+def _get_granularity_for_range(time_range: TimeRange, app_id: Optional[str] = None) -> Granularity:
+    """Auto-determine granularity based on time range (aligned with shared date_ranges). app_id required for ALL_TIME."""
     if time_range == TimeRange.LAST_7_DAYS:
-        # Daily granularity: up to yesterday end
-        end_date = now.replace(hour=23, minute=59, second=59, microsecond=999999) - timedelta(days=1)
-        start_date = end_date - timedelta(days=6)  # 7 days total including end_date
+        return Granularity.DAILY
     elif time_range == TimeRange.LAST_30_DAYS:
-        # Weekly granularity: up to last complete week (Sunday)
-        days_since_sunday = (now.weekday() + 1) % 7  # Monday=0, so Sunday=6 -> (6+1)%7=0
-        last_sunday = now - timedelta(days=days_since_sunday)
-        end_date = last_sunday.replace(hour=23, minute=59, second=59, microsecond=999999)
-        start_date = end_date - timedelta(days=29)  # 30 days total
-    elif time_range == TimeRange.LAST_90_DAYS:
-        # Weekly granularity: up to last complete week (Sunday)
-        days_since_sunday = (now.weekday() + 1) % 7
-        last_sunday = now - timedelta(days=days_since_sunday)
-        end_date = last_sunday.replace(hour=23, minute=59, second=59, microsecond=999999)
-        start_date = end_date - timedelta(days=89)  # 90 days total
-    elif time_range == TimeRange.LAST_6_MONTHS:
-        # Monthly granularity: up to last complete month
-        first_day_current_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        end_date = first_day_current_month - timedelta(seconds=1)  # End of last month
-        start_date = (first_day_current_month - relativedelta(months=6)).replace(day=1)  # Start of 6 months ago
-    elif time_range == TimeRange.LAST_12_MONTHS:
-        # Monthly granularity: up to last complete month
-        first_day_current_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        end_date = first_day_current_month - timedelta(seconds=1)  # End of last month
-        start_date = (first_day_current_month - relativedelta(months=12)).replace(day=1)  # Start of 12 months ago
-    elif time_range == TimeRange.THIS_YEAR:
-        # Monthly granularity: from Jan 1 to end of last complete month
-        start_date = datetime(now.year, 1, 1)
-        first_day_current_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        end_date = first_day_current_month - timedelta(seconds=1)  # End of last month
+        return Granularity.WEEKLY
+    elif time_range in [TimeRange.LAST_3_MONTHS, TimeRange.LAST_6_MONTHS, TimeRange.LAST_12_MONTHS, TimeRange.THIS_YEAR]:
+        return Granularity.MONTHLY
     elif time_range == TimeRange.ALL_TIME:
-        # Define ALL_TIME as from Jan 1 of the previous year up to end of last complete month
-        start_date = datetime(now.year - 1, 1, 1)
-        first_day_current_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        end_date = first_day_current_month - timedelta(seconds=1)
+        return _get_alltime_granularity(app_id)
     else:
-        # Default: up to end of last complete month
-        first_day_current_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        end_date = first_day_current_month - timedelta(seconds=1)
-        start_date = end_date - relativedelta(years=5)
-    
-    return start_date, end_date
+        return Granularity.MONTHLY
 
-def _get_alltime_granularity() -> Granularity:
+def _get_alltime_granularity(app_id: Optional[str] = None) -> Granularity:
     """
-    Dynamically determine granularity for all-time data based on data span.
-    If the app has been collecting data for more than 1 year, use yearly aggregation.
-    Otherwise, use monthly aggregation.
+    Dynamically determine granularity for all-time data. Uses vw_flattened_actions; scope by app via join.
     """
     try:
-        # Get the minimum date from the database synchronously
+        if not app_id:
+            return Granularity.MONTHLY
         query = """
-        SELECT MIN(first_date_recommended) FROM issues
+        SELECT MIN(p.review_created_at) FROM vw_flattened_actions v
+        JOIN processed_app_reviews p ON p.review_id = v.review_id AND p.app_id = %s
         """
         with pooled_connection() as conn:
-            result = pd.read_sql(query, conn)
+            result = pd.read_sql(query, conn, params=(str(app_id),))
             if not result.empty and result.iloc[0, 0] is not None:
                 min_date = result.iloc[0, 0]
                 current_date = datetime.now()
-                
-                # Calculate the difference in years
                 years_diff = (current_date - min_date).days / 365.25
-                
                 if years_diff > 1:
                     return Granularity.YEARLY
-                else:
-                    return Granularity.MONTHLY
-            else:
-                # If no data found, default to monthly
                 return Granularity.MONTHLY
+            return Granularity.MONTHLY
     except Exception as e:
         logger.warning(f"Error determining all-time granularity: {str(e)}. Defaulting to monthly.")
         return Granularity.MONTHLY
 
 # Automatic granularity assignment based on time range:
 # - Last 7 days: Daily aggregation
-# - Last 30-90 days: Weekly aggregation  
+# - Last 30 days–3 months: Weekly aggregation  
 # - Last 6-12 months: Monthly aggregation
 # - This year: Monthly aggregation
 # - All time: Dynamic (yearly if >1 year of data, monthly otherwise)
@@ -259,6 +196,7 @@ def _get_alltime_granularity() -> Granularity:
 
 
 async def _get_aggregated_actions_data(
+    app_id: str,
     start_date: datetime,
     end_date: datetime,
     aggregation_level: str,
@@ -266,7 +204,8 @@ async def _get_aggregated_actions_data(
     suggested_timeline: Optional[str] = None
 ):
     """
-    Get aggregated actions data for a given date range and aggregation level.
+    Get aggregated actions data for app_id, date range and aggregation level.
+    Uses vw_flattened_actions (has review_id); scope by app via join to processed_app_reviews.
     """
     
     # Map aggregation levels to SQL DATE_TRUNC arguments
@@ -282,20 +221,22 @@ async def _get_aggregated_actions_data(
 
     trunc_level = aggregation_map[aggregation_level]
 
+    # Filter by review_created_at in range; period from p.review_created_at. Scope by app via join.
     base_query = f"""
     WITH action_data AS (
         SELECT
-            action_type,
-            estimated_effort,
-            suggested_timeline,
-            category,
-            number_of_actions,
-            descr,
-            DATE_TRUNC('{trunc_level}', first_date_recommended) AS action_period
+            v.action_type,
+            v.estimated_effort,
+            v.suggested_timeline,
+            v.category,
+            v.number_of_actions,
+            v.descr,
+            DATE_TRUNC('{trunc_level}', p.review_created_at) AS action_period
         FROM
-            issues
+            vw_flattened_actions v
+            JOIN processed_app_reviews p ON p.review_id = v.review_id AND p.app_id = %s
         WHERE
-            DATE(first_date_recommended) BETWEEN %s AND %s
+            DATE(p.review_created_at) BETWEEN %s AND %s
             -- Dynamic filters will be added here
     ),
     action_type_counts AS (
@@ -469,19 +410,19 @@ async def _get_aggregated_actions_data(
         action_period;
     """
 
+    app_id = str(app_id)
     where_parts = []
-    params = [start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d')]
+    params = [app_id, start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d')]
 
     if estimated_effort:
-        # Handle comma-separated estimated_effort values
         effort_list = [s.strip() for s in estimated_effort.split(',')]
         placeholders = ', '.join(['%s'] * len(effort_list))
-        where_parts.append(f"estimated_effort IN ({placeholders})")
+        where_parts.append(f"v.estimated_effort IN ({placeholders})")
         params.extend(effort_list)
     if suggested_timeline:
         timeline_list = [s.strip() for s in suggested_timeline.split(',')]
         placeholders = ', '.join(['%s'] * len(timeline_list))
-        where_parts.append(f"suggested_timeline IN ({placeholders})")
+        where_parts.append(f"v.suggested_timeline IN ({placeholders})")
         params.extend(timeline_list)
 
     final_query = base_query.replace(
@@ -494,15 +435,15 @@ async def _get_aggregated_actions_data(
             logger.info(f"Executing aggregation query with params: {params}")
             logger.info(f"Final query: {final_query}")
             
-            # Debug: Check if there's any data in the date range
             debug_query = """
-            SELECT COUNT(*) as total_count, 
-                   MIN(first_date_recommended) as min_date, 
-                   MAX(first_date_recommended) as max_date
-            FROM issues 
-            WHERE DATE(first_date_recommended) BETWEEN %s AND %s
+            SELECT COUNT(*) as total_count,
+                   MIN(p.review_created_at) as min_date,
+                   MAX(p.review_created_at) as max_date
+            FROM vw_flattened_actions v
+            JOIN processed_app_reviews p ON p.review_id = v.review_id AND p.app_id = %s
+            WHERE DATE(p.review_created_at) BETWEEN %s AND %s
             """
-            debug_result = pd.read_sql(debug_query, conn, params=tuple(params[:2]))
+            debug_result = pd.read_sql(debug_query, conn, params=tuple(params[:3]))
             logger.info(f"Debug - Data in date range: {debug_result.to_dict('records')}")
             
             data = pd.read_sql(final_query, conn, params=tuple(params))
@@ -549,6 +490,7 @@ async def _get_aggregated_actions_data(
 #     return await _get_issues_data(start_date, end_date, 'monthly', ...)
 
 async def _get_actions_list(
+    app_id: str,
     start_date: datetime,
     end_date: datetime,
     order_by: str = 'count',
@@ -562,7 +504,7 @@ async def _get_actions_list(
     offset: Optional[int] = None
 ):
     """
-    Get a filtered and aggregated list of actions.
+    Get a filtered and aggregated list of actions for this app. Scoped by app_id via join.
     """
     
     # 1. Input Validation for literal values
@@ -580,51 +522,64 @@ async def _get_actions_list(
             detail="Invalid order direction. Must be 'ASC' or 'DESC'."
         )
     
-    # 2. SQL Query with placeholders
+    app_id = str(app_id)
+    # Filter by review_created_at in range; first/latest = MIN/MAX(p.review_created_at) per action for table display.
     base_query = """
-    SELECT 
+    WITH filtered AS (
+        SELECT
+            v.descr,
+            v.number_of_actions,
+            v.action_type,
+            v.estimated_effort,
+            v.suggested_timeline,
+            v.category,
+            p.review_created_at
+        FROM
+            vw_flattened_actions v
+            JOIN processed_app_reviews p ON p.review_id = v.review_id AND p.app_id = %s
+        WHERE
+            DATE(p.review_created_at) BETWEEN %s AND %s
+            -- Dynamic filters will be added here
+    )
+    SELECT
         descr,
-        number_of_actions,
-        first_date_recommended,
-        latest_date_recommended,
-        action_type,
-        estimated_effort,
-        suggested_timeline,
-        category
-    FROM
-        issues
-    WHERE 
-        DATE(first_date_recommended) BETWEEN %s AND %s
-        -- Dynamic filters will be added here
-    ORDER BY 
+        COUNT(*) AS number_of_actions,
+        MIN(review_created_at) AS first_date_recommended,
+        MAX(review_created_at) AS latest_date_recommended,
+        MAX(action_type) AS action_type,
+        MAX(estimated_effort) AS estimated_effort,
+        MAX(suggested_timeline) AS suggested_timeline,
+        MAX(category) AS category
+    FROM filtered
+    GROUP BY descr
+    ORDER BY
         number_of_actions DESC,
         latest_date_recommended DESC
     """
     
     # 3. Build WHERE clause and parameter list
     where_parts = []
-    params = [start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d')]
+    params = [app_id, start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d')]
 
     if action_type:
-        # Handle comma-separated severity values
         action_type_list = [s.strip() for s in action_type.split(',')]
         placeholders = ', '.join(['%s'] * len(action_type_list))
-        where_parts.append(f"action_type IN ({placeholders})")
+        where_parts.append(f"v.action_type IN ({placeholders})")
         params.extend(action_type_list)
     if estimated_effort:
         estimated_effort_list = [s.strip() for s in estimated_effort.split(',')]
         placeholders = ', '.join(['%s'] * len(estimated_effort_list))
-        where_parts.append(f"estimated_effort IN ({placeholders})")
+        where_parts.append(f"v.estimated_effort IN ({placeholders})")
         params.extend(estimated_effort_list)
     if suggested_timeline:
         suggested_timeline_list = [s.strip() for s in suggested_timeline.split(',')]
         placeholders = ', '.join(['%s'] * len(suggested_timeline_list))
-        where_parts.append(f"suggested_timeline IN ({placeholders})")
+        where_parts.append(f"v.suggested_timeline IN ({placeholders})")
         params.extend(suggested_timeline_list)
     if category:
         category_list = [s.strip() for s in category.split(',')]
         placeholders = ', '.join(['%s'] * len(category_list))
-        where_parts.append(f"category IN ({placeholders})")
+        where_parts.append(f"v.category IN ({placeholders})")
         params.extend(category_list)
         
     final_query = base_query.replace(
@@ -632,17 +587,13 @@ async def _get_actions_list(
         " AND " + " AND ".join(where_parts) if where_parts else ""
     )
     
-    # 4. Inject literal values into ORDER BY clause
-    order_by_clause = f"{order_by} {order}" if not sort_by else f'"{sort_by}" {order}'
-    final_query = final_query.replace("-- Dynamic order by will be added here", order_by_clause)
-    
-    # 5. Add pagination if specified
+    # 4. Add pagination if specified
     if limit is not None:
         final_query += f" LIMIT {limit}"
         if offset is not None:
             final_query += f" OFFSET {offset}"
     
-    # 6. Execute query and return data
+    # 5. Execute query and return data
     try:
         with pooled_connection() as conn:
             logger.info(f"Executing actions list query with params: {params}")
@@ -669,13 +620,16 @@ async def _get_actions_list(
 
 
 async def _get_minimum_date(app_id: str):
-    """Get minimum date for a given app_id"""
-    query = f"""
-    SELECT MIN(first_date_recommended) FROM issues WHERE app_id = %s
+    """Get minimum date for app_id. Uses MIN(p.review_created_at); scope via join to processed_app_reviews."""
+    query = """
+    SELECT MIN(p.review_created_at) FROM vw_flattened_actions v
+    JOIN processed_app_reviews p ON p.review_id = v.review_id AND p.app_id = %s
     """
-    return pd.read_sql(query, get_postgres_connection(), params=(app_id,))
+    with pooled_connection() as conn:
+        return pd.read_sql(query, conn, params=(str(app_id),))
 
 async def _get_actions_list_count(
+    app_id: str,
     start_date: datetime,
     end_date: datetime,
     action_type: Optional[str] = None,
@@ -684,40 +638,42 @@ async def _get_actions_list_count(
     category: Optional[str] = None,
 ):
     """
-    Get the count of distinct actions with optional filters.
+    Get the count of distinct actions with optional filters. Uses vw_flattened_actions; scope by app via join.
     """
     
-    # SQL Query to get the count of distinct actions
+    app_id = str(app_id)
+    # Filter by review_created_at in range; scope by app via join.
     base_query = """
-    SELECT COUNT(DISTINCT descr) AS count FROM issues
-    WHERE DATE(first_date_recommended) BETWEEN %s AND %s
+    SELECT COUNT(DISTINCT v.descr) AS count
+    FROM vw_flattened_actions v
+    JOIN processed_app_reviews p ON p.review_id = v.review_id AND p.app_id = %s
+    WHERE DATE(p.review_created_at) BETWEEN %s AND %s
     -- Dynamic filters will be added here
     """
     
     # Build WHERE clause and parameter list
     where_parts = []
-    params = [start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d')]
+    params = [app_id, start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d')]
 
     if action_type:
-        # Handle comma-separated severity values
         action_type_list = [s.strip() for s in action_type.split(',')]
         placeholders = ', '.join(['%s'] * len(action_type_list))
-        where_parts.append(f"action_type IN ({placeholders})")
+        where_parts.append(f"v.action_type IN ({placeholders})")
         params.extend(action_type_list)
     if estimated_effort:
         estimated_effort_list = [s.strip() for s in estimated_effort.split(',')]
         placeholders = ', '.join(['%s'] * len(estimated_effort_list))
-        where_parts.append(f"estimated_effort IN ({placeholders})")
+        where_parts.append(f"v.estimated_effort IN ({placeholders})")
         params.extend(estimated_effort_list)
     if suggested_timeline:
         suggested_timeline_list = [s.strip() for s in suggested_timeline.split(',')]
         placeholders = ', '.join(['%s'] * len(suggested_timeline_list))
-        where_parts.append(f"suggested_timeline IN ({placeholders})")
+        where_parts.append(f"v.suggested_timeline IN ({placeholders})")
         params.extend(suggested_timeline_list)
     if category:
         category_list = [s.strip() for s in category.split(',')]
         placeholders = ', '.join(['%s'] * len(category_list))
-        where_parts.append(f"category IN ({placeholders})")
+        where_parts.append(f"v.category IN ({placeholders})")
         params.extend(category_list)
         
     final_query = base_query.replace(
