@@ -47,10 +47,14 @@ class Subcategory(Enum):
     GENERAL = "General"
 
 
-class node_history(BaseModel):
+class NodeHistory(BaseModel):
     """Node history entry for tracking workflow steps"""
     node_name: str
     timestamp: str
+
+
+# Backward-compatible alias (avoid name collision with field node_history)
+node_history = NodeHistory
 
 
 class llm_input(BaseModel):
@@ -113,7 +117,7 @@ class CanonicalizationState(BaseModel):
     enrich_hybrid_results_error: Optional[str] = None
     
     # Tracking
-    node_history: List["node_history"] = Field(default_factory=list)
+    node_history: List[NodeHistory] = Field(default_factory=list)
     error: List[Dict[str, Any]] = Field(default_factory=list)
     
     class Config:

@@ -438,7 +438,24 @@ async def test_review_analysis(
 
 if __name__ == "__main__":
     import asyncio
-    asyncio.run(analyze_reviews(concurrent=True, max_concurrent=100, batch_size=300))
+
+    # Limit analysis to a single app (KCB) just like in reviews_scraper.main()
+    # KCB Google Play app id used in reviews_scraper.py:
+    #   com.kcb.mobilebanking.android.mbp
+    KCB_APP_ID = "com.kcb.mobilebanking.android.mbp"
+
+    # Run end-to-end analysis (canonicalization pipeline) for KCB only.
+    # You can tune batch_size / max_concurrent / date filters as needed.
+    asyncio.run(
+        analyze_reviews(
+            app_id=KCB_APP_ID,
+            concurrent=True,
+            max_concurrent=50,
+            batch_size=100,
+            analyzed=False,   # only pick unanalyzed reviews
+            reanalyze=False,  # set True if you want to re-run on already analyzed
+        )
+    )
 
 
 

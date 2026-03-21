@@ -77,6 +77,31 @@ class ReviewScraper:
             logger.error(f"Error getting latest review date for app {app_id}: {e}")
             return None
 
+    def get_latest_reply_date(self, app_id: str) -> Optional[datetime]:
+        """
+        Get the date of the most recent reply in the processed table for a specific app
+        """
+        try:
+            query = """
+                SELECT reply_created_at
+                FROM processed_app_reviews
+                WHERE app_id = %s AND reply_created_at IS NOT NULL
+                ORDER BY reply_created_at DESC
+                LIMIT 1
+            """
+            logger.info(f"DEBUG: Querying for app_id: '{app_id}'")
+            logger.info(f"DEBUG: SQL query: {query}")
+            self.cursor.execute(query, (app_id,))
+            result = self.cursor.fetchone()
+            if result:
+                logger.info(f"Found latest reply date for app {app_id}: {result[0]}")
+            else:
+                logger.info(f"No existing replies found for app {app_id}")
+            return result[0] if result else None
+        except Exception as e:
+            logger.error(f"Error getting latest reply date for app {app_id}: {e}")
+            return None
+
     def process_raw_reviews(self, app_id: str, after_date: Optional[datetime] = None) -> int:
         """
         Process raw reviews into the processed table
@@ -275,15 +300,15 @@ def main_cli():
         print(f"Total reviews fetched: {total_reviews}")
         print(f"Total reviews processed: {total_processed}")
 
-def main():
-    """Simple main function for fetching reviews without CLI"""
-    from datetime import datetime, timezone, timedelta
-    last_year = datetime.today().year - 1
+def main(app_id: str):
+    """Simple main function for fetching ONLY reviews newer than DB max date."""
+    from datetime import datetime, timezone
+    with ReviewScraper() as scraper:
+        latest_review_date = scraper.get_latest_review_date(app_id)
 
-    app_id = 'com.safaricom.mysafaricom'
-    #start_date = datetime(last_year, 1, 1, tzinfo=timezone.utc)  # Start from last year 1st January
-    start_date = datetime(2025, 1, 1, tzinfo=timezone.utc)
-    end_date = datetime(2025, 6, 13, 23, 59, 59, tzinfo=timezone.utc)  # End of July 24, 2025
+    # Never backfill old reviews for existing apps: only fetch strictly after DB max review date.
+    # If an app has no records yet, start from a fixed bootstrap date.
+    start_date = latest_review_date or datetime(2025, 1, 1, tzinfo=timezone.utc)
     with ReviewScraper() as scraper:
         total_reviews, total_processed = scraper.fetch_reviews(
             app_id=app_id,
@@ -291,13 +316,17 @@ def main():
             lang='en',
             country='ke',
             batch_size=100,
-            incremental=True,  # Ignore database, use start_date
+            incremental=True,
             start_date=start_date,
-            #end_date=end_date
         )
         
         print(f"Total reviews fetched: {total_reviews}")
         print(f"Total reviews processed: {total_processed}")
 
 if __name__ == "__main__":
-    main()
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Fetch and process Google Play Store reviews.")
+    parser.add_argument("--app-id", dest="app_id", type=str, required=True)
+    args = parser.parse_args()
+    main(args.app_id)

@@ -11,6 +11,8 @@ from app.routers import actions_router
 from app.routers import sentiments_router
 from app.routers import app_search_router
 from app.routers import general
+from app.routers import file_upload_router
+from app.routers import commentary_router
 from app.shared_services.db import get_postgres_connection
 
 # import CORS
@@ -59,6 +61,8 @@ app.include_router(actions_router.router)
 app.include_router(sentiments_router.router)
 app.include_router(app_search_router.router)
 app.include_router(general.router)
+app.include_router(file_upload_router.router)
+app.include_router(commentary_router.router)
 @app.get("/")
 async def read_root():
     return {"message": "Reviews Service is running!"}
@@ -79,4 +83,5 @@ async def health_check():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    # Use import string so uvicorn can enable reload correctly
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

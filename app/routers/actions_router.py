@@ -2,21 +2,19 @@ from fastapi import APIRouter, HTTPException, Query, status
 from datetime import datetime, timedelta
 import logging
 from typing import Optional, List
-from enum import Enum
 from dateutil.relativedelta import relativedelta
 import ast
 
 from app.shared_services.db import pooled_connection
-from app.shared_services.date_ranges import TimeRange, get_date_range
+from app.shared_services.date_ranges import (
+    TimeRange,
+    get_date_range,
+    Granularity,
+    get_granularity_for_range,
+)
 import pandas as pd
 
 logger = logging.getLogger(__name__)
-
-class Granularity(str, Enum):
-    DAILY = "daily"
-    WEEKLY = "weekly"
-    MONTHLY = "monthly"
-    YEARLY = "yearly"
 
 router = APIRouter(
     prefix="/actions",
@@ -44,7 +42,9 @@ async def get_actions_analytics(
     """
     try:
         # Auto-determine granularity based on time range (app_id needed for all-time)
-        granularity = _get_granularity_for_range(time_range, app_id)
+        granularity = get_granularity_for_range(
+            time_range, app_id, all_time_source="actions"
+        )
         
         # Calculate date range
         start_date, end_date = get_date_range(time_range)
@@ -145,56 +145,6 @@ async def list_actions(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error listing actions: {str(e)}"
         )
-# Helper functions
-def _get_granularity_for_range(time_range: TimeRange, app_id: Optional[str] = None) -> Granularity:
-    """Auto-determine granularity based on time range (aligned with shared date_ranges). app_id required for ALL_TIME."""
-    if time_range == TimeRange.LAST_7_DAYS:
-        return Granularity.DAILY
-    elif time_range == TimeRange.LAST_30_DAYS:
-        return Granularity.WEEKLY
-    elif time_range in [TimeRange.LAST_3_MONTHS, TimeRange.LAST_6_MONTHS, TimeRange.LAST_12_MONTHS, TimeRange.THIS_YEAR]:
-        return Granularity.MONTHLY
-    elif time_range == TimeRange.ALL_TIME:
-        return _get_alltime_granularity(app_id)
-    else:
-        return Granularity.MONTHLY
-
-def _get_alltime_granularity(app_id: Optional[str] = None) -> Granularity:
-    """
-    Dynamically determine granularity for all-time data. Uses vw_flattened_actions; scope by app via join.
-    """
-    try:
-        if not app_id:
-            return Granularity.MONTHLY
-        query = """
-        SELECT MIN(p.review_created_at) FROM vw_flattened_actions v
-        JOIN processed_app_reviews p ON p.review_id = v.review_id AND p.app_id = %s
-        """
-        with pooled_connection() as conn:
-            result = pd.read_sql(query, conn, params=(str(app_id),))
-            if not result.empty and result.iloc[0, 0] is not None:
-                min_date = result.iloc[0, 0]
-                current_date = datetime.now()
-                years_diff = (current_date - min_date).days / 365.25
-                if years_diff > 1:
-                    return Granularity.YEARLY
-                return Granularity.MONTHLY
-            return Granularity.MONTHLY
-    except Exception as e:
-        logger.warning(f"Error determining all-time granularity: {str(e)}. Defaulting to monthly.")
-        return Granularity.MONTHLY
-
-# Automatic granularity assignment based on time range:
-# - Last 7 days: Daily aggregation
-# - Last 30 days–3 months: Weekly aggregation  
-# - Last 6-12 months: Monthly aggregation
-# - This year: Monthly aggregation
-# - All time: Dynamic (yearly if >1 year of data, monthly otherwise)
-
-    
-
-
-
 async def _get_aggregated_actions_data(
     app_id: str,
     start_date: datetime,
@@ -222,6 +172,7 @@ async def _get_aggregated_actions_data(
     trunc_level = aggregation_map[aggregation_level]
 
     # Filter by review_created_at in range; period from p.review_created_at. Scope by app via join.
+    # action_volume: one row per (action_period, descr) with action_count = frequency (vw_flattened_actions has no number_of_actions).
     base_query = f"""
     WITH action_data AS (
         SELECT
@@ -229,8 +180,7 @@ async def _get_aggregated_actions_data(
             v.estimated_effort,
             v.suggested_timeline,
             v.category,
-            v.number_of_actions,
-            v.descr,
+            v."desc" AS descr,
             DATE_TRUNC('{trunc_level}', p.review_created_at) AS action_period
         FROM
             vw_flattened_actions v
@@ -238,6 +188,14 @@ async def _get_aggregated_actions_data(
         WHERE
             DATE(p.review_created_at) BETWEEN %s AND %s
             -- Dynamic filters will be added here
+    ),
+    action_volume AS (
+        SELECT
+            action_period,
+            descr,
+            COUNT(*) AS action_count
+        FROM action_data
+        GROUP BY action_period, descr
     ),
     action_type_counts AS (
         SELECT
@@ -282,38 +240,34 @@ async def _get_aggregated_actions_data(
     quartile_boundaries AS (
         SELECT
             action_period,
-            PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY number_of_actions) AS q1,
-            PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY number_of_actions) AS q2,
-            PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY number_of_actions) AS q3
+            PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY action_count) AS q1,
+            PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY action_count) AS q2,
+            PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY action_count) AS q3
         FROM
-            action_data
-        WHERE
-            number_of_actions IS NOT NULL
+            action_volume
         GROUP BY
             action_period
     ),
     quartile_summary AS (
         SELECT
-            ad.action_period,
+            av.action_period,
             CASE 
-                WHEN ad.number_of_actions <= qb.q1 THEN 1
-                WHEN ad.number_of_actions <= qb.q2 THEN 2
-                WHEN ad.number_of_actions <= qb.q3 THEN 3
+                WHEN av.action_count <= qb.q1 THEN 1
+                WHEN av.action_count <= qb.q2 THEN 2
+                WHEN av.action_count <= qb.q3 THEN 3
                 ELSE 4
             END AS quartile,
             COUNT(*) AS quartile_count
         FROM
-            action_data ad
+            action_volume av
         JOIN
-            quartile_boundaries qb ON ad.action_period = qb.action_period
-        WHERE
-            ad.number_of_actions IS NOT NULL
+            quartile_boundaries qb ON av.action_period = qb.action_period
         GROUP BY
-            ad.action_period,
+            av.action_period,
             CASE 
-                WHEN ad.number_of_actions <= qb.q1 THEN 1
-                WHEN ad.number_of_actions <= qb.q2 THEN 2
-                WHEN ad.number_of_actions <= qb.q3 THEN 3
+                WHEN av.action_count <= qb.q1 THEN 1
+                WHEN av.action_count <= qb.q2 THEN 2
+                WHEN av.action_count <= qb.q3 THEN 3
                 ELSE 4
             END
     )
@@ -508,7 +462,7 @@ async def _get_actions_list(
     """
     
     # 1. Input Validation for literal values
-    valid_sort_columns = ['count', 'descr', 'action_type', 'estimated_effort', 'suggested_timeline', 'category']
+    valid_sort_columns = ['count', 'desc', 'action_type', 'estimated_effort', 'suggested_timeline', 'category']
     valid_order_directions = ['ASC', 'DESC']
 
     if sort_by and sort_by not in valid_sort_columns:
@@ -527,8 +481,7 @@ async def _get_actions_list(
     base_query = """
     WITH filtered AS (
         SELECT
-            v.descr,
-            v.number_of_actions,
+            v."desc" AS descr,
             v.action_type,
             v.estimated_effort,
             v.suggested_timeline,
@@ -644,7 +597,7 @@ async def _get_actions_list_count(
     app_id = str(app_id)
     # Filter by review_created_at in range; scope by app via join.
     base_query = """
-    SELECT COUNT(DISTINCT v.descr) AS count
+    SELECT COUNT(DISTINCT v."desc") AS count
     FROM vw_flattened_actions v
     JOIN processed_app_reviews p ON p.review_id = v.review_id AND p.app_id = %s
     WHERE DATE(p.review_created_at) BETWEEN %s AND %s

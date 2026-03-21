@@ -131,6 +131,31 @@ async def list_all_segments(
             detail=f"Error getting all segments: {str(e)}"
         )
 
+@router.get("/list_topics", status_code=status.HTTP_200_OK)
+async def list_topics(
+    app_id: str = Query(..., description="App ID"),
+    time_range: TimeRange = Query(default=TimeRange.THIS_YEAR),
+):
+    """List topics from latest_analysis.aspects.topics for word cloud"""
+    try:
+        start_date, end_date = get_date_range(time_range)
+        topics = await _get_topics_data(app_id, start_date, end_date)
+        return {
+            "status": "success",
+            "time_range": time_range,
+            "date_range": {
+                "start": start_date.isoformat(),
+                "end": end_date.isoformat()
+            },
+            "data": topics
+        }
+    except Exception as e:
+        logger.error(f"Error getting topics: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error getting topics: {str(e)}"
+        )
+
 @router.get("/list_emotions", status_code=status.HTTP_200_OK)
 async def list_emotions(
     app_id: str = Query(..., description="App ID"),
@@ -360,6 +385,47 @@ WHERE
             detail=f"Error getting all segments data: {str(e)}"
         )
 
+async def _get_topics_data(
+    app_id: str,
+    start_date: datetime,
+    end_date: datetime
+):
+    """Extract topic names and sentiment from latest_analysis.aspects.topics[]"""
+    try:
+        query = """
+SELECT
+    p.review_id,
+    p.review_created_at,
+    (t ->> 'name')                          AS topic_name,
+    (t ->> 'sentiment')                     AS topic_sentiment,
+    (t ->> 'confidence')::numeric           AS confidence
+FROM
+    processed_app_reviews AS p
+CROSS JOIN LATERAL
+    jsonb_array_elements(
+        CASE
+            WHEN jsonb_typeof(p.latest_analysis -> 'aspects' -> 'topics') = 'array'
+            THEN p.latest_analysis -> 'aspects' -> 'topics'
+            ELSE '[]'::jsonb
+        END
+    ) AS t
+WHERE
+    p.latest_analysis IS NOT NULL
+    AND jsonb_typeof(p.latest_analysis -> 'aspects' -> 'topics') = 'array'
+    AND p.app_id = %s
+    AND DATE(p.review_created_at) BETWEEN %s AND %s
+"""
+        params = [app_id, start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d')]
+        with pooled_connection() as conn:
+            data = pd.read_sql(query, conn, params=tuple(params))
+            return data.to_dict('records')
+    except Exception as e:
+        logger.error(f"Error getting topics data: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error getting topics data: {str(e)}"
+        )
+
 async def _get_emotions_data(
     app_id: str,
     start_date: datetime,
@@ -468,14 +534,14 @@ async def _get_aggregated_sentiments_data(
         FROM (
             SELECT
                 sentiment_period,
-                jsonb_object_keys(latest_analysis->'emotions'->'emotion_scores') AS emotion_key,
+                jsonb_object_keys(latest_analysis->'sentiment'->'emotions'->'emotion_scores') AS emotion_key,
                 1 AS emotion_count
             FROM
                 review_data
             WHERE
-                latest_analysis IS NOT NULL 
-                AND latest_analysis->'emotions'->'emotion_scores' IS NOT NULL
-                AND jsonb_typeof(latest_analysis->'emotions'->'emotion_scores') = 'object'
+                latest_analysis IS NOT NULL
+                AND latest_analysis->'sentiment'->'emotions'->'emotion_scores' IS NOT NULL
+                AND jsonb_typeof(latest_analysis->'sentiment'->'emotions'->'emotion_scores') = 'object'
         ) emotion_expanded
         GROUP BY
             sentiment_period, emotion_key

@@ -219,6 +219,92 @@ def get_featured_apps(
         raise HTTPException(status_code=500, detail=f"Error getting featured apps: {str(e)}")
 
 
+@router.get("/by-org/{org_slug}")
+def get_apps_by_org(
+    org_slug: str,
+    limit: int = Query(50, ge=1, le=200, description="Max items per page"),
+    offset: int = Query(0, ge=0, description="Offset for pagination"),
+):
+    """
+    Get registered apps for a single organization slug.
+    Uses organizations/apps registry, then enriches with latest history snapshot when available.
+    """
+    try:
+        with pooled_connection() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    SELECT COUNT(*) AS total_apps
+                    FROM apps a
+                    INNER JOIN organizations o ON o.id = a.organization_id
+                    WHERE o.slug = %s
+                      AND o.active = TRUE
+                      AND a.active = TRUE
+                    """,
+                    (org_slug,),
+                )
+                total_row = cur.fetchone()
+                total_count = int(total_row["total_apps"] or 0) if total_row else 0
+
+                cur.execute(
+                    """
+                    WITH org_apps AS (
+                        SELECT
+                            a.app_id,
+                            a.display_name
+                        FROM apps a
+                        INNER JOIN organizations o ON o.id = a.organization_id
+                        WHERE o.slug = %s
+                          AND o.active = TRUE
+                          AND a.active = TRUE
+                    ),
+                    latest_history AS (
+                        SELECT DISTINCT ON (h.app_id)
+                            h.app_id,
+                            h.title,
+                            h.icon_url,
+                            h.score,
+                            h.ratings_count,
+                            h.app_updated_at
+                        FROM app_details_history h
+                        INNER JOIN org_apps oa ON oa.app_id = h.app_id
+                        ORDER BY h.app_id, h.inserted_on DESC
+                    )
+                    SELECT
+                        oa.app_id,
+                        COALESCE(NULLIF(oa.display_name, ''), NULLIF(lh.title, ''), oa.app_id) AS name,
+                        COALESCE(lh.icon_url, '') AS icon_url,
+                        COALESCE(lh.score, 0) AS rating,
+                        COALESCE(lh.ratings_count, 0) AS total_ratings,
+                        COALESCE(lh.app_updated_at::text, '') AS last_updated
+                    FROM org_apps oa
+                    LEFT JOIN latest_history lh ON lh.app_id = oa.app_id
+                    ORDER BY name ASC
+                    LIMIT %s OFFSET %s
+                    """,
+                    (org_slug, limit, offset),
+                )
+                rows = cur.fetchall() or []
+
+                items = []
+                for row in rows:
+                    items.append(
+                        {
+                            "app_id": row.get("app_id"),
+                            "name": row.get("name") or "",
+                            "icon_url": row.get("icon_url") or "",
+                            "rating": float(row.get("rating") or 0),
+                            "total_ratings": int(row.get("total_ratings") or 0),
+                            "last_updated": row.get("last_updated") or "",
+                        }
+                    )
+
+                return {"status": "success", "count": total_count, "items": items}
+    except Exception as e:
+        logger.error("Error getting org apps for slug=%s: %s", org_slug, str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error getting org apps: {e}")
+
+
 @router.get("/{app_id}")
 def get_app_details(app_id: str):
     """

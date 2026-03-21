@@ -39,8 +39,34 @@ class ReviewFilter(BaseModel):
     order_direction: str = "desc"
     from_date: Optional[datetime] = None
     to_date: Optional[datetime] = None
-    analyzed: bool = False
+    analyzed: Optional[bool] = None   # None = do not filter (e.g. CX Agent "select all"); True/False = filter
     date_list: Optional[List[datetime]] = None
+    min_score: Optional[float] = None  # stars filter: e.g. 1 for 1-star
+    max_score: Optional[float] = None  # stars filter: e.g. 1.99 for 1-star
+    sentiment: Optional[str] = None   # positive | neutral | negative (from latest_analysis)
+    inbox_id: Optional[str] = None    # CX Agent: all | unanswered | answered | ...
+    replied: Optional[bool] = None     # False = unanswered (reply_created_at IS NULL), True = answered (IS NOT NULL), None = no filter
+
+
+class ReviewListItem(BaseModel):
+    """Minimal fields for list/table view."""
+    id: int
+    review_id: str
+    username: Optional[str]
+    score: float
+    review_created_at: datetime
+    content: str
+    reply_created_at: Optional[datetime] = None   # null = unanswered (for CX bolding)
+
+
+class ReviewListResponse(BaseModel):
+    """GET /reviews/list response: always includes total_count; when cx_agent includes inbox counts for hover."""
+    status: str
+    data: List[ReviewListItem]
+    total_count: int
+    all_count: Optional[int] = None
+    unanswered_count: Optional[int] = None
+    answered_count: Optional[int] = None
 
 
      

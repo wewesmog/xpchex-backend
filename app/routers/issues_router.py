@@ -2,21 +2,19 @@ from fastapi import APIRouter, HTTPException, Query, status
 from datetime import datetime, timedelta
 import logging
 from typing import Optional, List
-from enum import Enum
 from dateutil.relativedelta import relativedelta
 import ast
 
 from app.shared_services.db import pooled_connection
-from app.shared_services.date_ranges import TimeRange, get_date_range
+from app.shared_services.date_ranges import (
+    TimeRange,
+    get_date_range,
+    Granularity,
+    get_granularity_for_range,
+)
 import pandas as pd
 
 logger = logging.getLogger(__name__)
-
-class Granularity(str, Enum):
-    DAILY = "daily"
-    WEEKLY = "weekly"
-    MONTHLY = "monthly"
-    YEARLY = "yearly"
 
 router = APIRouter(
     prefix="/issues",
@@ -44,7 +42,9 @@ async def get_issues_analytics(
     """
     try:
         # Auto-determine granularity based on time range (app_id needed for all-time)
-        granularity = _get_granularity_for_range(time_range, app_id)
+        granularity = get_granularity_for_range(
+            time_range, app_id, all_time_source="issues"
+        )
         
         # Calculate date range
         start_date, end_date = get_date_range(time_range)
@@ -139,58 +139,6 @@ async def list_issues(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error listing issues: {str(e)}"
         )
-# Helper functions
-def _get_granularity_for_range(time_range: TimeRange, app_id: Optional[str] = None) -> Granularity:
-    """Auto-determine granularity based on time range (aligned with shared date_ranges). app_id required for ALL_TIME."""
-    if time_range == TimeRange.LAST_7_DAYS:
-        return Granularity.DAILY
-    elif time_range == TimeRange.LAST_30_DAYS:
-        return Granularity.WEEKLY
-    elif time_range in [TimeRange.LAST_3_MONTHS, TimeRange.LAST_6_MONTHS, TimeRange.LAST_12_MONTHS, TimeRange.THIS_YEAR]:
-        return Granularity.MONTHLY
-    elif time_range == TimeRange.ALL_TIME:
-        return _get_alltime_granularity(app_id)
-    else:
-        return Granularity.MONTHLY
-
-def _get_alltime_granularity(app_id: Optional[str] = None) -> Granularity:
-    """
-    Dynamically determine granularity for all-time data based on data span for this app.
-    If the app has been collecting data for more than 1 year, use yearly aggregation.
-    Otherwise, use monthly aggregation. Scoped by app_id via join (vw_flattened_issues may not have app_id).
-    """
-    try:
-        if not app_id:
-            return Granularity.MONTHLY
-        query = """
-        SELECT MIN(p.review_created_at) FROM vw_flattened_issues v
-        JOIN processed_app_reviews p ON p.review_id = v.review_id AND p.app_id = %s
-        """
-        with pooled_connection() as conn:
-            result = pd.read_sql(query, conn, params=(app_id,))
-            if not result.empty and result.iloc[0, 0] is not None:
-                min_date = result.iloc[0, 0]
-                current_date = datetime.now()
-                years_diff = (current_date - min_date).days / 365.25
-                if years_diff > 1:
-                    return Granularity.YEARLY
-                return Granularity.MONTHLY
-            return Granularity.MONTHLY
-    except Exception as e:
-        logger.warning(f"Error determining all-time granularity: {str(e)}. Defaulting to monthly.")
-        return Granularity.MONTHLY
-
-# Automatic granularity assignment based on time range:
-# - Last 7 days: Daily aggregation
-# - Last 30 days–3 months: Weekly aggregation  
-# - Last 6-12 months: Monthly aggregation
-# - This year: Monthly aggregation
-# - All time: Dynamic (yearly if >1 year of data, monthly otherwise)
-
-    
-
-
-
 async def _get_aggregated_issues_data(
     app_id: str,
     start_date: datetime,
@@ -235,6 +183,8 @@ async def _get_aggregated_issues_data(
             JOIN processed_app_reviews p ON p.review_id = v.review_id AND p.app_id = %s
         WHERE
             DATE(p.review_created_at) BETWEEN %s AND %s
+            AND v."desc" IS NOT NULL
+            AND NULLIF(TRIM(v."desc"), '') IS NOT NULL
             -- Dynamic filters will be added here
         GROUP BY
             v."desc", v."issue_type", v."severity", v."category", v."snippet", v."key_words", DATE_TRUNC('{trunc_level}', p.review_created_at)
@@ -392,6 +342,8 @@ async def _get_issues_list(
             JOIN processed_app_reviews p ON p.review_id = v.review_id AND p.app_id = %s
         WHERE
             DATE(p.review_created_at) BETWEEN %s AND %s
+            AND v."desc" IS NOT NULL
+            AND NULLIF(TRIM(v."desc"), '') IS NOT NULL
             -- Dynamic filters will be added here
         GROUP BY
             v."desc", v."issue_type", v."severity", v."category", v."snippet", v."key_words", p.review_created_at
@@ -525,6 +477,8 @@ async def _get_issues_list_count(
                 JOIN processed_app_reviews p ON p.review_id = v.review_id AND p.app_id = %s
             WHERE
                 DATE(p.review_created_at) BETWEEN %s AND %s
+                AND v."desc" IS NOT NULL
+                AND NULLIF(TRIM(v."desc"), '') IS NOT NULL
                 -- Dynamic filters will be added here
             GROUP BY
                 v."desc", v."issue_type", v."severity", v."category", v."snippet", v."key_words", p.review_created_at

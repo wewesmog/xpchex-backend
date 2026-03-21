@@ -30,6 +30,9 @@ openai_client = instructor.patch(OpenAI(api_key=OPENAI_API_KEY), mode=instructor
 # Async OpenAI client
 async_openai_client = instructor.patch(AsyncOpenAI(api_key=OPENAI_API_KEY), mode=instructor.Mode.JSON)
 
+# Plain OpenAI client for embeddings (no instructor)
+_embedding_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
+
 # Configure Google Gemini
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 
@@ -50,7 +53,7 @@ else:
     gemini_instructor_client = None
     gemini_client = None
 
-def call_llm_api_openai(messages: List[Dict[str, str]], 
+def call_llm_api(messages: List[Dict[str, str]], 
                 model: str = "gpt-4o",
                 response_format: Optional[BaseModel] = None,
                 temperature: float = 0.3) -> Any:
@@ -105,13 +108,38 @@ def call_llm_api_openai(messages: List[Dict[str, str]],
         logger.error(f"Error in OpenAI API call: {e}")
         raise
 
-    # Groq API
+
+def embed_texts(
+    texts: List[str],
+    model: str = "text-embedding-3-small",
+) -> List[List[float]]:
+    """
+    Embed one or more texts with OpenAI (text-embedding-3-small, 1536 dims).
+    Use for response_history and RAG retrieval; keep model fixed so all vectors are comparable.
+    """
+    if not texts:
+        return []
+    if not _embedding_client:
+        raise ValueError("OPENAI_API_KEY not set; cannot embed")
+    # API accepts up to 2048 inputs per request; we batch in chunks to avoid token limits
+    batch_size = 100
+    all_embeddings: List[List[float]] = []
+    for i in range(0, len(texts), batch_size):
+        batch = texts[i : i + batch_size]
+        response = _embedding_client.embeddings.create(model=model, input=batch)
+        # Preserve order: response.data is in same order as input
+        order = {e.index: e.embedding for e in response.data}
+        all_embeddings.extend([order[j] for j in range(len(batch))])
+    return all_embeddings
+
+
+# Groq API
 
 
 # Patch Groq() with instructor, this is where the magic happens!
 groq_client = instructor.from_groq(Groq(api_key=os.getenv("GROQ_API_KEY")), mode=instructor.Mode.JSON)
 
-def call_llm_api(messages: List[Dict[str, str]],
+def call_llm_api_groq_provider(messages: List[Dict[str, str]],
                 model: str = "llama3-70b-8192",
                 response_format: Optional[BaseModel] = None,
                 max_tokens: int = 2000,
@@ -165,7 +193,7 @@ async_openrouter_client = AsyncOpenAI(
 # Patch async client with instructor
 async_openrouter_client = instructor.patch(async_openrouter_client, mode=instructor.Mode.JSON)
 
-def call_llm_api_1(messages: List[Dict[str, str]],
+def call_llm_api_openrouter_provider(messages: List[Dict[str, str]],
                 mode: str = "openai/gpt-oss-120b:exacto",
                 response_format: Optional[BaseModel] = None,
                 max_tokens: int = 8000,
@@ -216,9 +244,9 @@ def call_llm_api_1(messages: List[Dict[str, str]],
     except Exception as e:
         logger.error(f"Error in OpenRouter API call: {e}")
         raise
-
-
-async def call_llm_api_async_1(messages: List[Dict[str, str]],
+    
+    
+async def call_llm_api_openrouter_provider_async(messages: List[Dict[str, str]],
                 mode: str = "openai/gpt-oss-120b:exacto",
                 response_format: Optional[BaseModel] = None,
                 max_tokens: int = 8000,
@@ -293,9 +321,9 @@ async def call_llm_api_async_1(messages: List[Dict[str, str]],
             raise QuotaExceededError(f"OpenRouter quota exceeded: {e}") from e
         logger.error(f"Error in OpenRouter async API call: {e}")
         raise
-
-
-def call_llm_api(messages: List[Dict[str, str]],
+    
+    
+def call_llm_api_gemini_provider(messages: List[Dict[str, str]],
                 mode: str = "gemini-2.0-flash-lite",
                 response_format: Optional[BaseModel] = None,
                 max_tokens: int = 8000,
@@ -387,9 +415,9 @@ def call_llm_api(messages: List[Dict[str, str]],
             raise RateLimitError(f"Gemini rate limit: {e}") from e
         logger.error(f"Error in Gemini API call: {e}")
         raise
-
-
-async def call_llm_api_async(messages: List[Dict[str, str]],
+    
+    
+async def call_llm_api_gemini_provider_async(messages: List[Dict[str, str]],
                 mode: str = "gemini-2.0-flash-lite",
                 response_format: Optional[BaseModel] = None,
                 max_tokens: int = 8000,
@@ -488,8 +516,24 @@ async def call_llm_api_async(messages: List[Dict[str, str]],
             raise RateLimitError(f"Gemini rate limit: {e}") from e
         logger.error(f"Error in Gemini async API call: {e}")
         raise
+    
 
-
+async def call_llm_api_async(messages: List[Dict[str, str]], 
+                model: str = "gpt-4o",
+                response_format: Optional[BaseModel] = None,
+                temperature: float = 0.3) -> Any:
+    """
+    Primary async OpenAI helper used by the app.
+    Thin wrapper around call_llm_api_openai_async.
+    """
+    return await call_llm_api_openai_async(
+        messages=messages,
+        model=model,
+        response_format=response_format,
+        temperature=temperature,
+    )
+    
+    
 async def call_llm_api_openai_async(messages: List[Dict[str, str]], 
                 model: str = "gpt-4o",
                 response_format: Optional[BaseModel] = None,

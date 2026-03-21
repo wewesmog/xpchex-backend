@@ -29,7 +29,7 @@ import json
 from datetime import datetime
 import asyncio
 
-from app.models.canonicalization_models import llm_input, llm_output, CanonicalizationResult, CanonicalizationState, node_history
+from app.models.canonicalization_models import llm_input, llm_output, CanonicalizationResult, CanonicalizationState, NodeHistory
 from app.shared_services.llm import call_llm_api, call_llm_api_async, QuotaExceededError
 from app.prompts.canonicalization_prompts import canonization_with_examples, canonization_without_examples
 
@@ -165,18 +165,18 @@ async def get_exact_match_async(state: CanonicalizationState) -> Canonicalizatio
             state.existing_canonical_id = True
             state.source = 'exact_match'
             state.confidence_score = 1.0
-            state.node_history.append(node_history(node_name='exact_match', timestamp=datetime.now().isoformat()))
+            state.node_history.append(NodeHistory(node_name='exact_match', timestamp=datetime.now().isoformat()))
             return state
         else:
             logger.info(f"No exact match found for {state.input_statement}")
             state.exact_match_result = "No exact match found"
-            state.node_history.append(node_history(node_name='exact_match', timestamp=datetime.now().isoformat()))
+            state.node_history.append(NodeHistory(node_name='exact_match', timestamp=datetime.now().isoformat()))
             return state
     except Exception as e:
         logger.error(f"Error in exact match: {e}")
         state.exact_match_result = "Error in exact match"
         state.exact_match_error = str(e)
-        state.node_history.append(node_history(node_name='exact_match', timestamp=datetime.now().isoformat()))
+        state.node_history.append(NodeHistory(node_name='exact_match', timestamp=datetime.now().isoformat()))
         return state
 
 # Get match with pg_trm
@@ -201,17 +201,17 @@ async def get_lexical_similarity_async(state: CanonicalizationState) -> Canonica
         if results:
             logger.info(f"Lexical Similarity found for {statement}: {results[:5]}")
             state.lexical_similarity_result = [(r['canonical_id'], r['description'], r['similarity']) for r in results]
-            state.node_history.append(node_history(node_name='lexical_similarity', timestamp=datetime.now().isoformat()))
+            state.node_history.append(NodeHistory(node_name='lexical_similarity', timestamp=datetime.now().isoformat()))
             return state
         else:
             logger.info(f"No Lexical Similarity found for {statement}")
             state.lexical_similarity_result = None
-            state.node_history.append(node_history(node_name='lexical_similarity', timestamp=datetime.now().isoformat()))
+            state.node_history.append(NodeHistory(node_name='lexical_similarity', timestamp=datetime.now().isoformat()))
             return state
     except Exception as e:
         logger.error(f"Error in lexical similarity: {e}")
         state.lexical_similarity_error = str(e)
-        state.node_history.append(node_history(node_name='lexical_similarity', timestamp=datetime.now().isoformat()))
+        state.node_history.append(NodeHistory(node_name='lexical_similarity', timestamp=datetime.now().isoformat()))
         return state
 
 async def get_vector_similarity_async(state: CanonicalizationState) -> CanonicalizationState:
@@ -224,7 +224,7 @@ async def get_vector_similarity_async(state: CanonicalizationState) -> Canonical
             logger.warning(f"Could not get embedding for statement: {statement}")
             state.vector_similarity_result = None
             state.vector_similarity_error = "Could not get embedding for statement"
-            state.node_history.append(node_history(node_name='vector_similarity', timestamp=datetime.now().isoformat()))
+            state.node_history.append(NodeHistory(node_name='vector_similarity', timestamp=datetime.now().isoformat()))
             return state
     except QuotaExceededError:
         # Re-raise quota errors to stop execution immediately
@@ -259,18 +259,18 @@ async def get_vector_similarity_async(state: CanonicalizationState) -> Canonical
         if results:
             logger.info(f"Vector similarity found for {statement}: {results[:5]}")
             state.vector_similarity_result = [(r['canonical_id'], r['existing_statement'], r['similarity']) for r in results]
-            state.node_history.append(node_history(node_name='vector_similarity', timestamp=datetime.now().isoformat()))
+            state.node_history.append(NodeHistory(node_name='vector_similarity', timestamp=datetime.now().isoformat()))
             return state
         else:
             logger.info(f"No vector similarity found for {statement}")
             state.vector_similarity_result = None
             state.vector_similarity_error = "No vector similarity found for statement"
-            state.node_history.append(node_history(node_name='vector_similarity', timestamp=datetime.now().isoformat()))
+            state.node_history.append(NodeHistory(node_name='vector_similarity', timestamp=datetime.now().isoformat()))
             return state
     except Exception as e:
         logger.error(f"Error in vector similarity: {e}")
         state.vector_similarity_error = str(e)
-        state.node_history.append(node_history(node_name='vector_similarity', timestamp=datetime.now().isoformat()))
+        state.node_history.append(NodeHistory(node_name='vector_similarity', timestamp=datetime.now().isoformat()))
         return state
 
 # Sync wrappers used by older graph-based code paths
@@ -301,7 +301,7 @@ def get_hybrid_similarity(state: CanonicalizationState) -> CanonicalizationState
         if not state.lexical_similarity_result and not state.vector_similarity_result:
             state.hybrid_similarity_result = None
             state.hybrid_similarity_error = "No similarity score for statement"
-            state.node_history.append(node_history(node_name='hybrid_similarity', timestamp=datetime.now().isoformat()))
+            state.node_history.append(NodeHistory(node_name='hybrid_similarity', timestamp=datetime.now().isoformat()))
             return state
         
         # Use canonical_id as key to prevent duplicates
@@ -380,7 +380,7 @@ def get_hybrid_similarity(state: CanonicalizationState) -> CanonicalizationState
             state.canonical_id = None
             state.results = f"Low confidence hybrid match, top score: {combined_results[0][4]:.3f}" if combined_results else "No hybrid matches found"
         
-        state.node_history.append(node_history(node_name='hybrid_similarity', timestamp=datetime.now().isoformat()))
+        state.node_history.append(NodeHistory(node_name='hybrid_similarity', timestamp=datetime.now().isoformat()))
         return state
         
     except Exception as e:
@@ -391,7 +391,7 @@ def get_hybrid_similarity(state: CanonicalizationState) -> CanonicalizationState
             "timestamp": datetime.now().isoformat(),
             "message": f"Hybrid similarity error: {str(e)}"
         })
-        state.node_history.append(node_history(node_name='hybrid_similarity', timestamp=datetime.now().isoformat()))
+        state.node_history.append(NodeHistory(node_name='hybrid_similarity', timestamp=datetime.now().isoformat()))
         return state
  
     
@@ -405,7 +405,7 @@ async def get_hybrid_similarity_async(state: CanonicalizationState) -> Canonical
         if not state.lexical_similarity_result and not state.vector_similarity_result:
             state.hybrid_similarity_result = None
             state.hybrid_similarity_error = "No similarity score for statement"
-            state.node_history.append(node_history(node_name='hybrid_similarity', timestamp=datetime.now().isoformat()))
+            state.node_history.append(NodeHistory(node_name='hybrid_similarity', timestamp=datetime.now().isoformat()))
             return state
 
         combined_dict = {}
@@ -454,7 +454,7 @@ async def get_hybrid_similarity_async(state: CanonicalizationState) -> Canonical
             state.canonical_id = None
             state.results = f"Low confidence hybrid match, top score: {combined_results[0][4]:.3f}" if combined_results else "No hybrid matches found"
 
-        state.node_history.append(node_history(node_name='hybrid_similarity', timestamp=datetime.now().isoformat()))
+        state.node_history.append(NodeHistory(node_name='hybrid_similarity', timestamp=datetime.now().isoformat()))
         return state
 
     except Exception as e:
@@ -465,7 +465,7 @@ async def get_hybrid_similarity_async(state: CanonicalizationState) -> Canonical
             "timestamp": datetime.now().isoformat(),
             "message": f"Hybrid similarity error: {str(e)}"
         })
-        state.node_history.append(node_history(node_name='hybrid_similarity', timestamp=datetime.now().isoformat()))
+        state.node_history.append(NodeHistory(node_name='hybrid_similarity', timestamp=datetime.now().isoformat()))
         return state
 
 async def enrich_hybrid_results_async(state: CanonicalizationState) -> CanonicalizationState:
@@ -474,7 +474,7 @@ async def enrich_hybrid_results_async(state: CanonicalizationState) -> Canonical
         if not state.hybrid_similarity_result:
             logger.warning("No hybrid similarity results to enrich")
             state.enrich_hybrid_results_error = "No hybrid similarity results to enrich"
-            state.node_history.append(node_history(node_name='enrich_hybrid_results', timestamp=datetime.now().isoformat()))
+            state.node_history.append(NodeHistory(node_name='enrich_hybrid_results', timestamp=datetime.now().isoformat()))
             return state
             
         pool = await get_async_pool()
@@ -524,7 +524,7 @@ async def enrich_hybrid_results_async(state: CanonicalizationState) -> Canonical
         state.enriched_candidates = enriched_candidates
         state.enrich_hybrid_results_result = f"Enriched {len(enriched_candidates)} candidates"
         state.results = f"Enriched {len(enriched_candidates)} candidates for LLM"
-        state.node_history.append(node_history(node_name='enrich_hybrid_results', timestamp=datetime.now().isoformat()))
+        state.node_history.append(NodeHistory(node_name='enrich_hybrid_results', timestamp=datetime.now().isoformat()))
         return state
 
     except Exception as e:
@@ -535,7 +535,7 @@ async def enrich_hybrid_results_async(state: CanonicalizationState) -> Canonical
             "timestamp": datetime.now().isoformat(),
             "message": f"Enrich hybrid results error: {str(e)}"
         })
-        state.node_history.append(node_history(node_name='enrich_hybrid_results', timestamp=datetime.now().isoformat()))
+        state.node_history.append(NodeHistory(node_name='enrich_hybrid_results', timestamp=datetime.now().isoformat()))
         return state
 
 # Sync wrapper for enrich_hybrid_results
@@ -578,19 +578,19 @@ async def get_llm_input(state: CanonicalizationState) -> CanonicalizationState:
                     state.llm_with_examples_result = None
                     state.results = "LLM returned no result"
                 state.llm_used = True
-                state.node_history.append(node_history(node_name='llm_with_examples', timestamp=datetime.now().isoformat()))
+                state.node_history.append(NodeHistory(node_name='llm_with_examples', timestamp=datetime.now().isoformat()))
                 return state
             except QuotaExceededError as e:
                 # Re-raise quota errors to stop execution immediately
                 logger.error(f"Quota exceeded in LLM API call - stopping: {e}")
                 state.llm_with_examples_error = str(e)
-                state.node_history.append(node_history(node_name='llm_with_examples', timestamp=datetime.now().isoformat()))
+                state.node_history.append(NodeHistory(node_name='llm_with_examples', timestamp=datetime.now().isoformat()))
                 raise
             except Exception as e:
                 # Re-raise all LLM errors to stop execution
                 logger.error(f"Error in LLM API call - stopping: {e}")
                 state.llm_with_examples_error = str(e)
-                state.node_history.append(node_history(node_name='llm_with_examples', timestamp=datetime.now().isoformat()))
+                state.node_history.append(NodeHistory(node_name='llm_with_examples', timestamp=datetime.now().isoformat()))
                 raise
         else:
             logger.info(f"No examples found for LLM canonicalization")
@@ -612,7 +612,7 @@ async def get_llm_input(state: CanonicalizationState) -> CanonicalizationState:
                     state.llm_without_examples_result = None
                     state.results = "LLM returned no result"
                 state.llm_used = True
-                state.node_history.append(node_history(node_name='llm_without_examples', timestamp=datetime.now().isoformat()))
+                state.node_history.append(NodeHistory(node_name='llm_without_examples', timestamp=datetime.now().isoformat()))
                 return state
             except QuotaExceededError as e:
                 # Re-raise quota errors to stop execution immediately
@@ -633,7 +633,7 @@ async def get_llm_input(state: CanonicalizationState) -> CanonicalizationState:
                     "timestamp": datetime.now().isoformat(),
                     "message": f"LLM without examples error: {str(e)}"
                 })
-                state.node_history.append(node_history(node_name='llm_without_examples', timestamp=datetime.now().isoformat()))
+                state.node_history.append(NodeHistory(node_name='llm_without_examples', timestamp=datetime.now().isoformat()))
                 raise
                 
     except Exception as e:
@@ -644,7 +644,7 @@ async def get_llm_input(state: CanonicalizationState) -> CanonicalizationState:
             "timestamp": datetime.now().isoformat(),
             "message": f"LLM input error: {str(e)}"
         })
-        state.node_history.append(node_history(node_name='llm_input', timestamp=datetime.now().isoformat()))
+        state.node_history.append(NodeHistory(node_name='llm_input', timestamp=datetime.now().isoformat()))
         return state
     
 def save_canonicalization_result(state: CanonicalizationState, app_id: str = None, review_id: str = None, review_section: str = None) -> CanonicalizationState:
