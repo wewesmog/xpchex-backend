@@ -12,8 +12,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Layer cache: deps before app code
+# Install CPU-only PyTorch first — otherwise pip pulls ~GB of CUDA wheels (nvidia_cublas_cu12, …)
+# from PyPI, which is huge and often flaky on Docker Desktop.
 COPY requirements.txt .
+ENV PIP_DEFAULT_TIMEOUT=120
 RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cpu && \
     pip install --no-cache-dir -r requirements.txt
 
 COPY . .
