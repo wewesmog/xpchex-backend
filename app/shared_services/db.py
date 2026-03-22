@@ -247,13 +247,24 @@ def release_thread_connection():
 def release_connection(conn):
     """
     Return a pooled connection back to the pool.
+    If the connection is closed or unhealthy (e.g. server dropped mid-session),
+    pass close=True so the pool does not hand it out again.
     Safe to call in finally blocks.
     """
-    if conn and _connection_pool:
+    if not conn or not _connection_pool:
+        return
+    discard = bool(getattr(conn, "closed", False))
+    if not discard:
         try:
-            _connection_pool.putconn(conn)
-        except Exception as e:
-            logger.error(f"Error returning connection to pool: {e}")
+            discard = not validate_connection(conn)
+        except Exception:
+            discard = True
+    if discard:
+        logger.warning("Releasing pooled connection with close=True (stale or dead)")
+    try:
+        _connection_pool.putconn(conn, close=discard)
+    except Exception as e:
+        logger.error(f"Error returning connection to pool: {e}")
 
 
 @contextmanager

@@ -1,9 +1,10 @@
-# Python 3.9 compatibility (for str | Path and other 3.10+ type syntax in deps)
+# Local dev on Python 3.9+: optional typing backport
 eval-type-backport>=0.2.0
 
 # App / API
 fastapi>=0.100.0
 uvicorn[standard]>=0.20.0
+python-multipart>=0.0.9
 pydantic>=2.0.0
 python-dotenv>=1.0.0
 
@@ -17,21 +18,21 @@ numpy>=1.24.0
 pandas>=2.0.0
 python-dateutil>=2.8.0
 
-# LLM / AI
+# LLM / AI (shared_services/llm.py)
 openai>=1.0.0
 instructor>=0.4.8
 groq>=0.4.0
-google-genai
+google-genai>=1.0.0
 
 # Google Play
 google-play-scraper>=1.2.0
 
-# Graph (review analysis)
-langgraph>=0.0.30
-# Document Extraction
-docling>=2.0.0
-langchain-docling>=2.0.0
-
-# Chunking & Framework
+# LangGraph (review analysis, commentary, Nelly)
+langgraph>=0.2.0
+langchain-core>=0.3.0
 langchain>=0.3.0
 langchain-text-splitters>=0.3.0
+
+# Document extraction (app/nelly/chunk.py — DoclingLoader)
+docling>=2.0.0
+langchain-docling>=0.2.0

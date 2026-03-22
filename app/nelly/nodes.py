@@ -1,3 +1,4 @@
+import asyncio
 import json, re
 from datetime import datetime, timezone
 from openai import AsyncOpenAI
@@ -7,6 +8,7 @@ from typing import Optional
 from .state import CxAgentState
 
 
+import psycopg2
 from psycopg2.extras import execute_values, RealDictCursor
 from ..shared_services.db import pooled_connection
 from ..shared_services.llm import embed_texts, call_llm_api_async
@@ -23,6 +25,49 @@ SENSITIVE_KEYWORDS = {
 }
 STALE_THRESHOLD_DAYS = 90
 CONFIDENCE_THRESHOLD  = 0.6
+
+# Must match DB CHECK escalations_reason_check (see AGENTIC_RAG_DESIGN.md §2.8)
+ALLOWED_ESCALATION_REASONS = frozenset(
+    {
+        "low_confidence",
+        "sensitive_topic",
+        "no_context",
+        "agent_unsure",
+        "manual",
+        "nelly_unresolved",
+    }
+)
+
+
+def db_escalation_reason_and_message(state: CxAgentState) -> tuple[str, Optional[str]]:
+    """
+    Map graph state to (reason, agent_message) for `escalations`.
+
+    `escalation_reason` may be a short code (from our code paths) or free text from the
+    self-eval LLM; only the codes above are valid in column `reason`. Free text goes to
+    `agent_message` when it is not itself a valid code.
+    """
+    raw = state.get("escalation_reason")
+    raw_s = (raw or "").strip()
+
+    if raw_s in ALLOWED_ESCALATION_REASONS:
+        return raw_s, None
+
+    # Legacy / alternate label used in nelly_main when no row is found
+    if raw_s == "no_review_found":
+        return "nelly_unresolved", None
+
+    detail = raw_s if raw_s else None
+    conf = float(state.get("agent_confidence") or 0.0)
+
+    if detail is None:
+        if conf < CONFIDENCE_THRESHOLD:
+            return "low_confidence", None
+        return "agent_unsure", None
+
+    if conf < CONFIDENCE_THRESHOLD:
+        return "low_confidence", detail
+    return "agent_unsure", detail
 
 
 # ── classify_review ────────────────────────────────────────────────────────────
@@ -55,15 +100,10 @@ data_loss, slow_loading, transaction_failure."""
 
 # ── retrieve_context ───────────────────────────────────────────────────────────
 
-async def retrieve_context(state: CxAgentState) -> dict:
-    """Multi-source retrieval. Embeds the review once and caches it in state."""
-    # embed_texts is synchronous in `app.shared_services.llm`,
-    # so we must not `await` it here.
-    review_emb = embed_texts([state["review_text"]])[0]
-    chunks = []
+def _retrieve_context_chunks(state: CxAgentState, review_emb) -> list:
+    """DB-heavy work for retrieve_context (sync)."""
+    chunks: list = []
 
-    # pooled_connection() is a synchronous psycopg2 context manager.
-    # We keep this function `async` so the caller can still `await` it.
     with pooled_connection() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             # ── response_history: semantic (review_embedding) ──────────────────────
@@ -218,7 +258,32 @@ async def retrieve_context(state: CxAgentState) -> dict:
         #         "published_at":  None,
         #     })
 
-    return {"review_embedding": review_emb, "retrieved_chunks": chunks}
+    return chunks
+
+
+async def retrieve_context(state: CxAgentState) -> dict:
+    """Multi-source retrieval. Embeds the review once and caches it in state."""
+    # embed_texts is synchronous in `app.shared_services.llm`,
+    # so we must not `await` it here.
+    review_emb = embed_texts([state["review_text"]])[0]
+
+    # pooled_connection() is synchronous; long remote DB sessions can drop mid-query.
+    # Retry transient disconnects so the pool does not hand out a dead socket.
+    _TRANSIENT = (psycopg2.OperationalError, psycopg2.InterfaceError)
+    for attempt in range(3):
+        try:
+            chunks = _retrieve_context_chunks(state, review_emb)
+            return {"review_embedding": review_emb, "retrieved_chunks": chunks}
+        except _TRANSIENT as e:
+            logger.warning(
+                "retrieve_context: DB connection lost (attempt %s/3): %s",
+                attempt + 1,
+                e,
+            )
+            if attempt < 2:
+                await asyncio.sleep(0.5 * (2**attempt))
+            else:
+                raise
 
 
 # ── score_and_rerank ───────────────────────────────────────────────────────────
@@ -489,9 +554,11 @@ async def save_draft(state: CxAgentState) -> dict:
 # ── escalate_node ──────────────────────────────────────────────────────────────
 
 async def escalate_node(state: CxAgentState) -> dict:
+    reason_code, agent_message = db_escalation_reason_and_message(state)
     snapshot = json.dumps({
         "confidence":  state["agent_confidence"],
         "reason":      state.get("escalation_reason"),
+        "reason_code": reason_code,
         "chunks":      state["retrieved_chunks"][:3],
     })
 
@@ -516,16 +583,17 @@ async def escalate_node(state: CxAgentState) -> dict:
             cur.execute(
                 """
                 INSERT INTO escalations
-                    (review_id, app_id, draft_id, reason, confidence_score, status)
-                VALUES (%s, %s, %s, %s, %s, 'open')
+                    (review_id, app_id, draft_id, reason, confidence_score, status, agent_message)
+                VALUES (%s, %s, %s, %s, %s, 'open', %s)
                 RETURNING id
                 """,
                 (
                     state["review_id"],
                     state["app_id"],
                     draft_id,
-                    state.get("escalation_reason") or "agent_unsure",
+                    reason_code,
                     state["agent_confidence"],
+                    agent_message,
                 ),
             )
             escalation_id = cur.fetchone()[0]

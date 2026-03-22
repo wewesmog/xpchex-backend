@@ -6,7 +6,7 @@
 
 from pathlib import Path
 from langchain_docling import DoclingLoader
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from psycopg2.extras import execute_values
 
 from ..shared_services.db import pooled_connection

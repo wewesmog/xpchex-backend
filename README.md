@@ -65,6 +65,15 @@ After installation:
 - **Backend API**: http://localhost:8000
 - **Database**: localhost:5432
 
+### Docker Compose (API only — this repo)
+
+The `docker-compose.yml` service maps **host `8001` → container `8000`** so another process can use host port **8000**.
+
+- **API**: http://localhost:8001  
+- **Health**: http://localhost:8001/health  
+
+Point `NEXT_PUBLIC_API_URL` (and similar) at `http://localhost:8001` when testing against Docker locally.
+
 ## 🔧 Configuration
 
 ### Environment Variables
@@ -81,7 +90,8 @@ PGPASSWORD=xpchex_password
 DB_SSL_MODE=disable
 
 # Application Configuration
-NEXT_PUBLIC_API_URL=http://localhost:8000
+# Full offline install: backend on :8000. Docker Compose (this repo, API only): use :8001.
+NEXT_PUBLIC_API_URL=http://localhost:8001
 ```
 
 ### Database Credentials
@@ -144,7 +154,7 @@ docker compose up -d
 
 3. **Access services**:
    - Frontend: http://localhost:3000
-   - Backend: http://localhost:8000
+   - Backend (Docker Compose): http://localhost:8001
    - Database: localhost:5432
 
 ### Backend Development
@@ -191,7 +201,7 @@ npm run dev
 
 ### Network Configuration
 - Frontend: Port 3000
-- Backend: Port 8000
+- Backend: Port 8000 (direct uvicorn); **Docker Compose in this repo publishes the API on host port 8001**
 - Database: Port 5432
 - All services communicate via Docker network
 
@@ -228,7 +238,8 @@ npm run dev
 ## 📈 Monitoring
 
 ### Health Checks
-- Backend: http://localhost:8000/
+- Backend (Docker Compose): http://localhost:8001/health
+- Backend (uvicorn direct): http://localhost:8000/
 - Frontend: http://localhost:3000/
 - Database: Connection test via backend
 
