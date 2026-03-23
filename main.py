@@ -13,7 +13,7 @@ from app.routers import app_search_router
 from app.routers import general
 from app.routers import file_upload_router
 from app.routers import commentary_router
-from app.shared_services.db import get_postgres_connection
+from app.shared_services.db import non_pooled_connection
 
 # import CORS
 from fastapi.middleware.cors import CORSMiddleware
@@ -71,12 +71,12 @@ async def read_root():
 async def health_check():
     """Health check endpoint for Docker healthchecks"""
     try:
-        # Test database connection
-        conn = get_postgres_connection()
-        if conn:
-            conn.close()
-            return {"status": "healthy", "database": "connected"}
-        return {"status": "unhealthy", "database": "disconnected"}
+        # Avoid consuming pool slots for frequent health probes.
+        with non_pooled_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT 1")
+                cursor.fetchone()
+        return {"status": "healthy", "database": "connected"}
     except Exception as e:
         return {"status": "unhealthy", "error": str(e)}
 
