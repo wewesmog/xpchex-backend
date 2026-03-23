@@ -166,9 +166,15 @@ def get_postgres_connection(
                     else:
                         logger.warning(f"Got stale connection from pool (attempt {attempt + 1}/{max_retries}), discarding")
                         try:
-                            conn.close()
-                        except:
-                            pass
+                            # Important: always return checked-out pooled connections via putconn.
+                            # If we only close() here, pool bookkeeping can leak a used slot.
+                            _connection_pool.putconn(conn, close=True)
+                        except Exception as put_err:
+                            logger.warning(f"Failed to discard stale pooled connection cleanly: {put_err}")
+                            try:
+                                conn.close()
+                            except Exception:
+                                pass
                         # Continue to next attempt
                 else:
                     logger.warning(f"Failed to get connection from pool (attempt {attempt + 1}/{max_retries})")

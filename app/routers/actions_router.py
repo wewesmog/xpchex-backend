@@ -187,6 +187,8 @@ async def _get_aggregated_actions_data(
             JOIN processed_app_reviews p ON p.review_id = v.review_id AND p.app_id = %s
         WHERE
             DATE(p.review_created_at) BETWEEN %s AND %s
+            AND v."desc" IS NOT NULL
+            AND NULLIF(TRIM(v."desc"), '') IS NOT NULL
             -- Dynamic filters will be added here
     ),
     action_volume AS (
@@ -276,7 +278,8 @@ async def _get_aggregated_actions_data(
         count(descr) AS total_actions,
         sum(
             CASE
-                WHEN estimated_effort = 'low' AND suggested_timeline = 'short-term' THEN 1
+                WHEN LOWER(TRIM(COALESCE(estimated_effort, ''))) = 'low'
+                 AND LOWER(TRIM(COALESCE(suggested_timeline, ''))) = 'short-term' THEN 1
                 ELSE 0
             END
         ) AS quick_wins,
@@ -492,6 +495,8 @@ async def _get_actions_list(
             JOIN processed_app_reviews p ON p.review_id = v.review_id AND p.app_id = %s
         WHERE
             DATE(p.review_created_at) BETWEEN %s AND %s
+            AND v."desc" IS NOT NULL
+            AND NULLIF(TRIM(v."desc"), '') IS NOT NULL
             -- Dynamic filters will be added here
     )
     SELECT
@@ -601,6 +606,8 @@ async def _get_actions_list_count(
     FROM vw_flattened_actions v
     JOIN processed_app_reviews p ON p.review_id = v.review_id AND p.app_id = %s
     WHERE DATE(p.review_created_at) BETWEEN %s AND %s
+    AND v."desc" IS NOT NULL
+    AND NULLIF(TRIM(v."desc"), '') IS NOT NULL
     -- Dynamic filters will be added here
     """
     
