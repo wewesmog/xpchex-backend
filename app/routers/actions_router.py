@@ -422,11 +422,11 @@ async def _get_aggregated_actions_data(
                     
                 except Exception as conversion_error:
                     logger.error(f"Error converting data to JSON format: {conversion_error}")
-                    # Fallback: return empty result
-                    return {}
+                    # Fallback: return empty list (API contract: data is always an array)
+                    return []
             else:
                 logger.warning("No aggregated actions data found - this might indicate a query issue")
-                return {}
+                return []
     except Exception as e:
         logger.error(f"Error getting actions data: {str(e)}", exc_info=True)
         raise HTTPException(

@@ -1,8 +1,11 @@
+from __future__ import annotations
+
 import os
 import asyncio
 import asyncpg
 
 from .logger_setup import setup_logger
+from .db_pool_config import pool_min_max
 
 logger = setup_logger()
 
@@ -10,9 +13,14 @@ _pool = None
 _pool_lock = asyncio.Lock()
 
 
-async def init_async_pool(min_size: int = 5, max_size: int = 50) -> asyncpg.Pool:
-    """Initialize a global asyncpg pool."""
+async def init_async_pool(min_size: int | None = None, max_size: int | None = None) -> asyncpg.Pool:
+    """Initialize a global asyncpg pool (same DB_POOL_* limits as psycopg2 pool)."""
     global _pool
+    env_min, env_max = pool_min_max()
+    if min_size is None:
+        min_size = env_min
+    if max_size is None:
+        max_size = env_max
     async with _pool_lock:
         if _pool is None:
             db_host = os.getenv("PGHOST", "localhost")

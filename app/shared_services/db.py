@@ -14,6 +14,7 @@ from psycopg2.extras import Json, RealDictCursor
 import numpy as np
 
 from .logger_setup import setup_logger
+from .db_pool_config import pool_min_max
 
 # Load environment variables
 load_dotenv()
@@ -39,16 +40,21 @@ _thread_local = threading.local()
 # postgres connection without pooling
 
 
-def init_connection_pool(minconn: int = 10, maxconn: int = 100):
+def init_connection_pool(minconn: Optional[int] = None, maxconn: Optional[int] = None):
     """
     Initialize connection pool for PostgreSQL database.
-    
-    :param minconn: Minimum number of connections in pool (default: 5)
-    :param maxconn: Maximum number of connections in pool (default: 50)
-    :return: Connection pool object
+
+    Defaults come from DB_POOL_MIN / DB_POOL_MAX (see db_pool_config), tuned for
+    Neon and small Postgres tiers. Override env or pass explicit minconn/maxconn.
     """
     global _connection_pool
-    
+
+    env_min, env_max = pool_min_max()
+    if minconn is None:
+        minconn = env_min
+    if maxconn is None:
+        maxconn = env_max
+
     with _pool_lock:
         if _connection_pool is None:
             # Get database connection details from environment variables

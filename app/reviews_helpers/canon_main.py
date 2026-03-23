@@ -748,8 +748,8 @@ def rerun_failed_canonicalizations(
 async def main_async():
     # Initialize connection pools (sync and async) for production throughput
     try:
-        init_connection_pool(minconn=10, maxconn=50)
-        await init_async_pool(min_size=10, max_size=50)
+        init_connection_pool()
+        await init_async_pool()
         logger.info("Connection pools initialized successfully")
     except Exception as e:
         logger.error(f"Failed to initialize connection pools: {e}")
