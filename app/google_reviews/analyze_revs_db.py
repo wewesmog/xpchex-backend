@@ -111,6 +111,7 @@ async def analyze_reviews(
     max_score: Optional[float] = None,
     analyzed: bool = False,
     reanalyze: bool = False,
+    stale_analysis: bool = False,
     delay_between_reviews: float = 60.0,
     concurrent: bool = False,
     max_concurrent: int = 5
@@ -138,8 +139,12 @@ async def analyze_reviews(
         logger.info(f"  - date_list: {len(date_list)} specific dates")
     else:
         logger.info("  - date_list: None")
+    if stale_analysis and not reanalyze:
+        reanalyze = True
+        logger.info("  - stale_analysis=True implies reanalyze=True")
     logger.info(f"  - analyzed filter: {analyzed} (False = only unanalyzed)")
     logger.info(f"  - reanalyze: {reanalyze}")
+    logger.info(f"  - stale_analysis: {stale_analysis}")
     logger.info(f"  - max_reviews: {max_reviews if max_reviews else 'Unlimited'}")
     
     try:
@@ -160,8 +165,8 @@ async def analyze_reviews(
                 date_list=date_list,  # Optional - if None, no specific date filter
                 username=None,
                 review_id=None,
-                analyzed=analyzed or reanalyze  # Include analyzed reviews if analyzed=True OR reanalyze=True
-
+                analyzed=(None if stale_analysis else (analyzed or reanalyze)),
+                stale_analysis=True if stale_analysis else None,
             )
             
             # Get reviews based on filters

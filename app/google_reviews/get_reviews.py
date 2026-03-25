@@ -76,7 +76,17 @@ def _build_where_clause_and_params(filters: ReviewFilter):
         conditions.append("reply_created_at IS NULL")
     elif filters.replied is True:
         conditions.append("reply_created_at IS NOT NULL")
-    if filters.analyzed is not None:
+    if filters.stale_analysis:
+        conditions.append("analyzed = true")
+        conditions.append("latest_analysis IS NOT NULL")
+        # Only re-run when fingerprint exists but review/reply text no longer matches (legacy rows without key are untouched).
+        conditions.append("latest_analysis ? '_analysis_input_fingerprint'")
+        conditions.append(
+            "latest_analysis->>'_analysis_input_fingerprint' <> md5("
+            "coalesce(content, '') || E'\\x1e' || coalesce(reply_content, '')"
+            ")"
+        )
+    elif filters.analyzed is not None:
         conditions.append("analyzed = %s")
         params.append(filters.analyzed)
     # Past SLA inbox: unanswered and older than SLA_DAYS since review date

@@ -46,6 +46,8 @@ class ReviewFilter(BaseModel):
     sentiment: Optional[str] = None   # positive | neutral | negative (from latest_analysis)
     inbox_id: Optional[str] = None    # CX Agent: all | unanswered | answered | ...
     replied: Optional[bool] = None     # False = unanswered (reply_created_at IS NULL), True = answered (IS NOT NULL), None = no filter
+    # When True: analyzed rows where latest_analysis has _analysis_input_fingerprint and it != hash of current text/reply.
+    stale_analysis: Optional[bool] = None
 
 
 class ReviewListItem(BaseModel):

@@ -2,6 +2,7 @@
 # Save to the table 
 from datetime import datetime, timezone
 from typing import Dict, Any, Tuple, Optional, List
+import hashlib
 import json
 from psycopg2.extras import execute_values
 from ..shared_services.db import pooled_connection
@@ -9,6 +10,13 @@ from ..shared_services.logger_setup import setup_logger
 from ..shared_services.utils import DateTimeEncoder
 
 logger = setup_logger()
+
+
+def analysis_input_fingerprint(content: Optional[str], reply_content: Optional[str]) -> str:
+    """MD5 of review body + reply body (UTF-8). Must match SQL in get_reviews stale_analysis filter."""
+    payload = (content or "") + "\x1e" + (reply_content or "")
+    return hashlib.md5(payload.encode("utf-8")).hexdigest()
+
 
 def get_review_app_id(review_id: str, conn) -> Optional[str]:
     """
@@ -145,13 +153,13 @@ def save_reviews_analysis_bulk(analyses: List[Dict[str, Any]]) -> int:
                         params.extend([a['app_id'], a['review_id']])
                     
                     cur.execute(f"""
-                        SELECT par.app_id, par.review_id, par.content
+                        SELECT par.app_id, par.review_id, par.content, par.reply_content
                         FROM processed_app_reviews par
                         INNER JOIN (VALUES {values_clause}) AS v(app_id, review_id)
                         ON par.app_id = v.app_id AND par.review_id = v.review_id
                     """, params)
                     
-                    content_map = {(row[0], row[1]): row[2] for row in cur.fetchall()}
+                    content_map = {(row[0], row[1]): (row[2], row[3]) for row in cur.fetchall()}
                 else:
                     content_map = {}
                 
@@ -165,14 +173,18 @@ def save_reviews_analysis_bulk(analyses: List[Dict[str, Any]]) -> int:
                     analysis_data = analysis['analysis_data']
                     
                     # Get original content
-                    original_content = content_map.get((app_id, review_id))
-                    if not original_content:
+                    row_pair = content_map.get((app_id, review_id))
+                    if not row_pair:
                         logger.warning(f"Review not found: app_id={app_id}, review_id={review_id}")
                         continue
+                    original_content, reply_content = row_pair
                     
                     # Ensure analysis data has correct fields
                     analysis_data['review_id'] = review_id
                     analysis_data['content'] = original_content
+                    analysis_data['_analysis_input_fingerprint'] = analysis_input_fingerprint(
+                        original_content, reply_content
+                    )
                     
                     analysis_json = json.dumps(analysis_data, cls=DateTimeEncoder)
                     
@@ -266,7 +278,7 @@ def save_review_analysis(review_id: str, analysis_data: Dict[str, Any], app_id: 
                 
                 # Get the original review content
                 cur.execute("""
-                    SELECT content 
+                    SELECT content, reply_content
                     FROM processed_app_reviews 
                     WHERE app_id = %s AND review_id = %s
                 """, (app_id, review_id))
@@ -276,11 +288,14 @@ def save_review_analysis(review_id: str, analysis_data: Dict[str, Any], app_id: 
                     logger.error(f"Review not found: app_id={app_id}, review_id={review_id}")
                     return False
                     
-                original_content = result[0]
+                original_content, reply_content = result[0], result[1]
                 
                 # Ensure the analysis data has the correct review_id and content
                 analysis_data['review_id'] = review_id
                 analysis_data['content'] = original_content
+                analysis_data['_analysis_input_fingerprint'] = analysis_input_fingerprint(
+                    original_content, reply_content
+                )
                 
                 # First insert into ai_review_analysis
                 cur.execute("""

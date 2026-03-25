@@ -13,6 +13,7 @@ from app.routers import app_search_router
 from app.routers import general
 from app.routers import file_upload_router
 from app.routers import commentary_router
+from app.routers import overview_router
 from app.shared_services.db import non_pooled_connection
 
 # import CORS
@@ -63,6 +64,7 @@ app.include_router(app_search_router.router)
 app.include_router(general.router)
 app.include_router(file_upload_router.router)
 app.include_router(commentary_router.router)
+app.include_router(overview_router.router)
 @app.get("/")
 async def read_root():
     return {"message": "Reviews Service is running!"}

@@ -1,13 +1,12 @@
 from __future__ import annotations
 """
-Manual end-to-end pipeline runner (single file).
+Batch daily pipeline (no scrape, no Nelly — run those via scrape_nelly_pipeline.py).
 
 Run order:
-1) Scrape reviews
-2) Analyze reviews
+1) Analyze new reviews
+2) Re-analyze reviews where stored fingerprint exists but no longer matches text/reply
 3) Commentary
-4) Nelly drafts
-5) Upsert past responses
+4) Upsert past responses → response_history
 """
 
 import argparse
@@ -17,106 +16,10 @@ from datetime import datetime
 
 from app.commentary.commentary_main import run_commentary_generation
 from app.google_reviews.analyze_revs_db import analyze_reviews
-from app.google_reviews.reviews_scraper import ReviewScraper
-from app.nelly.graph import cx_agent_graph
-from app.nelly.nelly_main import _build_state_from_row, fetch_pending_reviews
 from app.nelly.upsert_past_responses import run_upsert_past_responses
 from app.shared_services.logger_setup import setup_logger
 
 logger = setup_logger()
-
-
-def run_reviews_scrape(app_id: str, country: str, lang: str, batch_size: int) -> tuple[int, int]:
-    with ReviewScraper() as scraper:
-        return scraper.fetch_reviews(
-            app_id=app_id,
-            count=0,
-            lang=lang,
-            country=country,
-            batch_size=batch_size,
-            incremental=True,
-        )
-
-
-async def _nelly_one_review(app_id: str, row: tuple, semaphore: asyncio.Semaphore):
-    """Run LangGraph for a single review; semaphore limits concurrent in-flight runs."""
-    async with semaphore:
-        state = _build_state_from_row(app_id=app_id, row=row)
-        review_id = state.get("review_id")
-        logger.info("Nelly processing review_id=%s", review_id)
-        final_state = await cx_agent_graph.ainvoke(state)
-        logger.info(
-            "Nelly done review_id=%s draft_id=%s escalation_id=%s",
-            review_id,
-            final_state.get("draft_id"),
-            final_state.get("escalation_id"),
-        )
-        return review_id, final_state
-
-
-async def run_nelly_drafts(
-    app_id: str,
-    batch: int,
-    max_reviews: int,
-    *,
-    concurrent: bool = True,
-    max_concurrent: int = 3,
-) -> int:
-    """
-    Fetch up to `batch` pending reviews per outer loop; process each with Nelly.
-
-    When concurrent=True (default), up to `max_concurrent` graph runs overlap (faster when
-    waiting on LLM / IO). DB pool and Neon limits: keep max_concurrent modest (2–5).
-    """
-    processed = 0
-    batch = max(1, int(batch))
-    max_reviews = max(0, int(max_reviews))
-    max_concurrent = max(1, int(max_concurrent))
-
-    while True:
-        remaining = None if max_reviews == 0 else max_reviews - processed
-        if remaining is not None and remaining <= 0:
-            break
-        limit = batch if remaining is None else min(batch, remaining)
-        rows = fetch_pending_reviews(app_id=app_id, limit=limit)
-        if not rows:
-            break
-
-        if not concurrent or max_concurrent == 1:
-            for row in rows:
-                state = _build_state_from_row(app_id=app_id, row=row)
-                review_id = state.get("review_id")
-                logger.info("Nelly processing review_id=%s", review_id)
-                final_state = await cx_agent_graph.ainvoke(state)
-                processed += 1
-                logger.info(
-                    "Nelly done review_id=%s draft_id=%s escalation_id=%s",
-                    review_id,
-                    final_state.get("draft_id"),
-                    final_state.get("escalation_id"),
-                )
-                if max_reviews and processed >= max_reviews:
-                    return processed
-            continue
-
-        logger.info(
-            "Nelly concurrent batch size=%s max_concurrent=%s",
-            len(rows),
-            max_concurrent,
-        )
-        semaphore = asyncio.Semaphore(max_concurrent)
-        tasks = [_nelly_one_review(app_id, row, semaphore) for row in rows]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        for result in results:
-            if isinstance(result, Exception):
-                logger.error("Nelly concurrent task failed: %s", result)
-                raise result
-            processed += 1
-            if max_reviews and processed >= max_reviews:
-                return processed
-
-    return processed
 
 
 async def run_pipeline(args: argparse.Namespace) -> None:
@@ -127,26 +30,15 @@ async def run_pipeline(args: argparse.Namespace) -> None:
     if not app_id:
         raise SystemExit("Missing --app-id (or env MVP_APP_ID)")
 
-    logger.info("Starting manual daily pipeline for app_id=%s", app_id)
+    logger.info("Starting daily batch pipeline for app_id=%s", app_id)
     logger.info(
-        "Order: scrape -> analyze -> commentary -> nelly -> upsert responses"
+        "Order: analyze (new) -> analyze (stale) -> commentary -> upsert responses"
     )
 
     started = datetime.utcnow()
 
-    if not args.skip_scrape:
-        fetched, inserted = run_reviews_scrape(
-            app_id=app_id,
-            country=args.country,
-            lang=args.lang,
-            batch_size=args.scrape_batch_size,
-        )
-        logger.info("Scrape complete fetched=%s inserted=%s", fetched, inserted)
-    else:
-        logger.info("Skipping scrape step")
-
     if not args.skip_analysis:
-        analyzed = await analyze_reviews(
+        analyzed_new = await analyze_reviews(
             app_id=app_id,
             min_date=None,
             max_reviews=args.analysis_max_reviews,
@@ -155,10 +47,27 @@ async def run_pipeline(args: argparse.Namespace) -> None:
             max_concurrent=args.analysis_max_concurrent,
             analyzed=False,
             reanalyze=args.analysis_reanalyze_all,
+            stale_analysis=False,
         )
-        logger.info("Analysis complete processed=%s", analyzed)
+        logger.info("Analysis (new / unanalyzed) complete processed=%s", analyzed_new)
+
+        if not args.skip_stale_analysis_repair:
+            stale_n = await analyze_reviews(
+                app_id=app_id,
+                min_date=None,
+                max_reviews=args.stale_analysis_max_reviews,
+                batch_size=args.analysis_batch_size,
+                concurrent=True,
+                max_concurrent=args.analysis_max_concurrent,
+                analyzed=False,
+                reanalyze=True,
+                stale_analysis=True,
+            )
+            logger.info("Analysis (stale fingerprint vs text) complete processed=%s", stale_n)
+        else:
+            logger.info("Skipping stale-analysis repair (--skip-stale-analysis-repair)")
     else:
-        logger.info("Skipping analysis step")
+        logger.info("Skipping analysis steps")
 
     if not args.skip_commentary:
         commentary = await run_commentary_generation(app_id=app_id)
@@ -171,18 +80,6 @@ async def run_pipeline(args: argparse.Namespace) -> None:
         )
     else:
         logger.info("Skipping commentary step")
-
-    if not args.skip_nelly:
-        drafted = await run_nelly_drafts(
-            app_id=app_id,
-            batch=args.nelly_batch_size,
-            max_reviews=args.nelly_max_reviews,
-            concurrent=not args.nelly_sequential,
-            max_concurrent=args.nelly_max_concurrent,
-        )
-        logger.info("Nelly draft generation complete processed=%s", drafted)
-    else:
-        logger.info("Skipping nelly step")
 
     if not args.skip_upsert:
         synced = run_upsert_past_responses(
@@ -197,39 +94,31 @@ async def run_pipeline(args: argparse.Namespace) -> None:
         logger.info("Skipping upsert step")
 
     elapsed = datetime.utcnow() - started
-    logger.info("Manual daily pipeline completed in %s", elapsed)
+    logger.info("Daily batch pipeline completed in %s", elapsed)
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run full daily local pipeline manually")
+    parser = argparse.ArgumentParser(description="Daily batch: analyze, commentary, upsert (no scrape/Nelly)")
     parser.add_argument("--app-id", default=None)
-    parser.add_argument("--country", default="ke")
-    parser.add_argument("--lang", default="en")
-
-    parser.add_argument("--scrape-batch-size", type=int, default=100)
     parser.add_argument("--upsert-batch-size", type=int, default=100)
     parser.add_argument("--analysis-batch-size", type=int, default=10)
     parser.add_argument("--analysis-max-concurrent", type=int, default=5)
     parser.add_argument("--analysis-max-reviews", type=int, default=0)
     parser.add_argument("--analysis-reanalyze-all", action="store_true")
-    parser.add_argument("--nelly-batch-size", type=int, default=10)
-    parser.add_argument("--nelly-max-reviews", type=int, default=0)
     parser.add_argument(
-        "--nelly-sequential",
+        "--skip-stale-analysis-repair",
         action="store_true",
-        help="Process Nelly one review at a time (disable concurrent overlap).",
+        help="Skip re-analysis when review/reply changed vs stored fingerprint (default is to run this pass).",
     )
     parser.add_argument(
-        "--nelly-max-concurrent",
+        "--stale-analysis-max-reviews",
         type=int,
-        default=3,
-        help="Max concurrent Nelly graph runs when not --nelly-sequential (default 3).",
+        default=0,
+        help="Max reviews per run for stale-fingerprint repair (0 = unlimited).",
     )
 
-    parser.add_argument("--skip-scrape", action="store_true")
     parser.add_argument("--skip-upsert", action="store_true")
     parser.add_argument("--skip-analysis", action="store_true")
-    parser.add_argument("--skip-nelly", action="store_true")
     parser.add_argument("--skip-commentary", action="store_true")
     return parser.parse_args()
 
