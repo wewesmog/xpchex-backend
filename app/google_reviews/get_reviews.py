@@ -128,7 +128,7 @@ async def get_reviews(filters: ReviewFilter) -> List[Review]:
             latest_analysis        
         FROM processed_app_reviews 
         WHERE {where_clause}
-        ORDER BY (reply_created_at IS NULL) DESC, {filters.order_by} {filters.order_direction}
+        ORDER BY  {filters.order_by} {filters.order_direction}
         LIMIT %s OFFSET %s
     """
     
