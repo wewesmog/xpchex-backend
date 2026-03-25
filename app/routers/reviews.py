@@ -7,6 +7,19 @@ from datetime import datetime
 import logging
 from typing import Optional
 
+
+def _ai_draft_empty_message(draft_text: Optional[str], reply_content: Optional[str]) -> Optional[str]:
+    """Human-readable copy when there is no AI draft. None when a draft exists."""
+    if draft_text and str(draft_text).strip():
+        return None
+    if reply_content and str(reply_content).strip():
+        return (
+            "No AI response was generated for this review. "
+            "A public reply is already published on the store."
+        )
+    return "No AI response has been generated for this review yet."
+
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(
@@ -183,6 +196,9 @@ async def get_review_details(review_id: str):
         review_payload["draft_source"] = draft_source
         review_payload["node_history_id"] = node_history_id
         review_payload["node_history_snapshot"] = node_history_snapshot
+        review_payload["ai_draft_empty_message"] = _ai_draft_empty_message(
+            draft_text, review.reply_content
+        )
 
         return {
             "status": "success",
