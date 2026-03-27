@@ -16,7 +16,16 @@ Does not run AI analysis, commentary, or response_history upsert — see daily_p
 import argparse
 import asyncio
 import os
+from contextlib import asynccontextmanager
 from datetime import datetime
+
+from dotenv import load_dotenv
+
+load_dotenv()
+
+from app.shared_services.logfire_setup import configure as _configure_logfire  # noqa: E402
+
+_configure_logfire(service_name="xpchex-scrape-nelly")
 
 from app.google_reviews.reviews_scraper import ReviewScraper
 from app.nelly.graph import cx_agent_graph
@@ -24,6 +33,18 @@ from app.nelly.nelly_main import _build_state_from_row, fetch_pending_reviews
 from app.shared_services.logger_setup import setup_logger
 
 logger = setup_logger()
+
+try:
+    import logfire as _logfire
+    _HAS_LOGFIRE = True
+except ImportError:
+    _HAS_LOGFIRE = False
+
+
+@asynccontextmanager
+async def _noop_span(_name: str = "", **_kwargs):
+    """No-op async context manager used when logfire is unavailable."""
+    yield
 
 
 def run_reviews_scrape(app_id: str, country: str, lang: str, batch_size: int) -> tuple[int, int]:
@@ -43,7 +64,9 @@ async def _nelly_one_review(app_id: str, row: tuple, semaphore: asyncio.Semaphor
         state = _build_state_from_row(app_id=app_id, row=row)
         review_id = state.get("review_id")
         logger.info("Nelly processing review_id=%s", review_id)
-        final_state = await cx_agent_graph.ainvoke(state)
+        _span = _logfire.span if _HAS_LOGFIRE else _noop_span
+        async with _span("nelly_review", review_id=review_id, app_id=app_id):
+            final_state = await cx_agent_graph.ainvoke(state)
         logger.info(
             "Nelly done review_id=%s draft_id=%s escalation_id=%s",
             review_id,
@@ -109,34 +132,39 @@ async def run_pipeline(args: argparse.Namespace) -> None:
     logger.info("Starting scrape + Nelly pipeline for app_id=%s", app_id)
     started = datetime.utcnow()
 
-    if not args.skip_scrape:
-        fetched, inserted = run_reviews_scrape(
-            app_id=app_id,
-            country=args.country,
-            lang=args.lang,
-            batch_size=args.scrape_batch_size,
-        )
-        logger.info(
-            "Scrape complete fetched=%s processed_rows=%s (processed_app_reviews updated via process_raw_reviews)",
-            fetched,
-            inserted,
-        )
-    else:
-        logger.info(
-            "Skipping scrape — Nelly will only use rows already in processed_app_reviews"
-        )
+    _span = _logfire.span if _HAS_LOGFIRE else _noop_span
 
-    if not args.skip_nelly:
-        drafted = await run_nelly_drafts(
-            app_id=app_id,
-            batch=args.nelly_batch_size,
-            max_reviews=args.nelly_max_reviews,
-            concurrent=not args.nelly_sequential,
-            max_concurrent=args.nelly_max_concurrent,
-        )
-        logger.info("Nelly draft generation complete processed=%s", drafted)
-    else:
-        logger.info("Skipping nelly step")
+    async with _span("scrape_nelly_pipeline", app_id=app_id):
+        if not args.skip_scrape:
+            async with _span("scrape_reviews", app_id=app_id, country=args.country, lang=args.lang):
+                fetched, inserted = run_reviews_scrape(
+                    app_id=app_id,
+                    country=args.country,
+                    lang=args.lang,
+                    batch_size=args.scrape_batch_size,
+                )
+            logger.info(
+                "Scrape complete fetched=%s processed_rows=%s (processed_app_reviews updated via process_raw_reviews)",
+                fetched,
+                inserted,
+            )
+        else:
+            logger.info(
+                "Skipping scrape — Nelly will only use rows already in processed_app_reviews"
+            )
+
+        if not args.skip_nelly:
+            async with _span("nelly_drafts", app_id=app_id, max_reviews=args.nelly_max_reviews):
+                drafted = await run_nelly_drafts(
+                    app_id=app_id,
+                    batch=args.nelly_batch_size,
+                    max_reviews=args.nelly_max_reviews,
+                    concurrent=not args.nelly_sequential,
+                    max_concurrent=args.nelly_max_concurrent,
+                )
+            logger.info("Nelly draft generation complete processed=%s", drafted)
+        else:
+            logger.info("Skipping nelly step")
 
     logger.info("Scrape + Nelly pipeline completed in %s", datetime.utcnow() - started)
 

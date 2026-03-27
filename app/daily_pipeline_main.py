@@ -14,12 +14,35 @@ import asyncio
 import os
 from datetime import datetime
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
+from app.shared_services.logfire_setup import configure as _configure_logfire  # noqa: E402
+
+_configure_logfire(service_name="xpchex-daily-pipeline")
+
 from app.commentary.commentary_main import run_commentary_generation
 from app.google_reviews.analyze_revs_db import analyze_reviews
 from app.nelly.upsert_past_responses import run_upsert_past_responses
 from app.shared_services.logger_setup import setup_logger
 
 logger = setup_logger()
+
+try:
+    import logfire as _logfire
+    _HAS_LOGFIRE = True
+except ImportError:
+    _HAS_LOGFIRE = False
+
+
+from contextlib import asynccontextmanager
+
+
+@asynccontextmanager
+async def _noop_span(_name: str = "", **_kwargs):
+    """No-op async context manager used when logfire is unavailable."""
+    yield
 
 
 async def run_pipeline(args: argparse.Namespace) -> None:
@@ -37,61 +60,68 @@ async def run_pipeline(args: argparse.Namespace) -> None:
 
     started = datetime.utcnow()
 
-    if not args.skip_analysis:
-        analyzed_new = await analyze_reviews(
-            app_id=app_id,
-            min_date=None,
-            max_reviews=args.analysis_max_reviews,
-            batch_size=args.analysis_batch_size,
-            concurrent=True,
-            max_concurrent=args.analysis_max_concurrent,
-            analyzed=False,
-            reanalyze=args.analysis_reanalyze_all,
-            stale_analysis=False,
-        )
-        logger.info("Analysis (new / unanalyzed) complete processed=%s", analyzed_new)
+    _span = _logfire.span if _HAS_LOGFIRE else _noop_span
 
-        if not args.skip_stale_analysis_repair:
-            stale_n = await analyze_reviews(
-                app_id=app_id,
-                min_date=None,
-                max_reviews=args.stale_analysis_max_reviews,
-                batch_size=args.analysis_batch_size,
-                concurrent=True,
-                max_concurrent=args.analysis_max_concurrent,
-                analyzed=False,
-                reanalyze=True,
-                stale_analysis=True,
-            )
-            logger.info("Analysis (stale fingerprint vs text) complete processed=%s", stale_n)
+    async with _span("daily_pipeline", app_id=app_id):
+        if not args.skip_analysis:
+            async with _span("analyze_new_reviews", app_id=app_id, max_reviews=args.analysis_max_reviews):
+                analyzed_new = await analyze_reviews(
+                    app_id=app_id,
+                    min_date=None,
+                    max_reviews=args.analysis_max_reviews,
+                    batch_size=args.analysis_batch_size,
+                    concurrent=True,
+                    max_concurrent=args.analysis_max_concurrent,
+                    analyzed=False,
+                    reanalyze=args.analysis_reanalyze_all,
+                    stale_analysis=False,
+                )
+            logger.info("Analysis (new / unanalyzed) complete processed=%s", analyzed_new)
+
+            if not args.skip_stale_analysis_repair:
+                async with _span("analyze_stale_reviews", app_id=app_id, max_reviews=args.stale_analysis_max_reviews):
+                    stale_n = await analyze_reviews(
+                        app_id=app_id,
+                        min_date=None,
+                        max_reviews=args.stale_analysis_max_reviews,
+                        batch_size=args.analysis_batch_size,
+                        concurrent=True,
+                        max_concurrent=args.analysis_max_concurrent,
+                        analyzed=False,
+                        reanalyze=True,
+                        stale_analysis=True,
+                    )
+                logger.info("Analysis (stale fingerprint vs text) complete processed=%s", stale_n)
+            else:
+                logger.info("Skipping stale-analysis repair (--skip-stale-analysis-repair)")
         else:
-            logger.info("Skipping stale-analysis repair (--skip-stale-analysis-repair)")
-    else:
-        logger.info("Skipping analysis steps")
+            logger.info("Skipping analysis steps")
 
-    if not args.skip_commentary:
-        commentary = await run_commentary_generation(app_id=app_id)
-        logger.info(
-            "Commentary complete generated=%s skipped=%s failed=%s jobs=%s",
-            commentary.summary.get("generated"),
-            commentary.summary.get("skipped"),
-            commentary.summary.get("errors"),
-            commentary.summary.get("jobs_total"),
-        )
-    else:
-        logger.info("Skipping commentary step")
+        if not args.skip_commentary:
+            async with _span("commentary", app_id=app_id):
+                commentary = await run_commentary_generation(app_id=app_id)
+            logger.info(
+                "Commentary complete generated=%s skipped=%s failed=%s jobs=%s",
+                commentary.summary.get("generated"),
+                commentary.summary.get("skipped"),
+                commentary.summary.get("errors"),
+                commentary.summary.get("jobs_total"),
+            )
+        else:
+            logger.info("Skipping commentary step")
 
-    if not args.skip_upsert:
-        synced = run_upsert_past_responses(
-            app_id=app_id,
-            min_date=None,
-            use_max_from_history=True,
-            batch_size=args.upsert_batch_size,
-            limit=None,
-        )
-        logger.info("Upsert past responses complete synced=%s", synced)
-    else:
-        logger.info("Skipping upsert step")
+        if not args.skip_upsert:
+            async with _span("upsert_past_responses", app_id=app_id):
+                synced = run_upsert_past_responses(
+                    app_id=app_id,
+                    min_date=None,
+                    use_max_from_history=True,
+                    batch_size=args.upsert_batch_size,
+                    limit=None,
+                )
+            logger.info("Upsert past responses complete synced=%s", synced)
+        else:
+            logger.info("Skipping upsert step")
 
     elapsed = datetime.utcnow() - started
     logger.info("Daily batch pipeline completed in %s", elapsed)

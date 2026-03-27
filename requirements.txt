@@ -36,3 +36,6 @@ langchain-text-splitters>=0.3.0
 # Document extraction (app/nelly/chunk.py — DoclingLoader)
 docling>=2.0.0
 langchain-docling>=0.2.0
+
+# Observability
+logfire[openai,psycopg2,httpx,fastapi]>=3.0.0

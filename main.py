@@ -3,6 +3,13 @@
 from fastapi import FastAPI, APIRouter
 import logging
 from dotenv import load_dotenv
+
+# Logfire must be configured before routers are imported so that OpenAI /
+# psycopg2 patches are in place before any client is first used.
+load_dotenv()
+from app.shared_services.logfire_setup import configure as _configure_logfire  # noqa: E402
+_configure_logfire(service_name="xpchex-api")
+
 from app.routers import reviews
 from app.routers import reviewAnalysis
 from app.routers import issues_router
@@ -25,8 +32,7 @@ logger = logging.getLogger(__name__)
 
 
 
-# Load environment variables
-load_dotenv()
+# load_dotenv() already called above before logfire bootstrap
 
 # Import routers
 
@@ -35,6 +41,14 @@ load_dotenv()
 
 
 app = FastAPI()
+
+# Instrument all FastAPI routes — must be called after app is created.
+# This adds request/response spans to every endpoint in every router.
+try:
+    import logfire
+    logfire.instrument_fastapi(app)
+except Exception:
+    pass
 
 origins = [
     "http://localhost:3000",
