@@ -22,12 +22,31 @@ from app.routers import file_upload_router
 from app.routers import commentary_router
 from app.routers import overview_router
 from app.shared_services.db import non_pooled_connection
+from app.shared_services.logger_setup import setup_logger
 
 # import CORS
 from fastapi.middleware.cors import CORSMiddleware
 
-# Configure Logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+# Configure logging: reuse shared file + console handlers
+_shared_logger = setup_logger("xpchex-api")
+root_logger = logging.getLogger()
+root_logger.setLevel(logging.INFO)
+for handler in _shared_logger.handlers:
+    has_same_file = (
+        hasattr(handler, "baseFilename")
+        and any(
+            hasattr(existing, "baseFilename")
+            and existing.baseFilename == handler.baseFilename
+            for existing in root_logger.handlers
+        )
+    )
+    has_same_type_stream = (
+        not hasattr(handler, "baseFilename")
+        and any(type(existing) is type(handler) for existing in root_logger.handlers)
+    )
+    if not has_same_file and not has_same_type_stream:
+        root_logger.addHandler(handler)
+
 logger = logging.getLogger(__name__)
 
 
