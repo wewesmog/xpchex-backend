@@ -63,8 +63,10 @@ async def run_commentary_generation(
             "results": [],
         }
         # Looping over many jobs in a single graph run needs a higher recursion limit
-        # than LangGraph's default (25). Keep headroom for node transitions per job.
-        recursion_limit = max(250, len(initial_state["requested_time_ranges"]) * len(initial_state["requested_slot_keys"]) * 8)
+        # than LangGraph's default (25). Keep extra fixed headroom for graph startup/
+        # shutdown transitions to avoid hitting exact boundary values.
+        job_count = len(initial_state["requested_time_ranges"]) * len(initial_state["requested_slot_keys"])
+        recursion_limit = max(300, (job_count * 10) + 50)
         final_state = await commentary_graph.ainvoke(
             initial_state,
             config={"recursion_limit": recursion_limit},

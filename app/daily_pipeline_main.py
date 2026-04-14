@@ -36,12 +36,12 @@ except ImportError:
     _HAS_LOGFIRE = False
 
 
-from contextlib import asynccontextmanager
+from contextlib import contextmanager
 
 
-@asynccontextmanager
-async def _noop_span(_name: str = "", **_kwargs):
-    """No-op async context manager used when logfire is unavailable."""
+@contextmanager
+def _noop_span(_name: str = "", **_kwargs):
+    """No-op context manager used when logfire is unavailable."""
     yield
 
 
@@ -62,9 +62,9 @@ async def run_pipeline(args: argparse.Namespace) -> None:
 
     _span = _logfire.span if _HAS_LOGFIRE else _noop_span
 
-    async with _span("daily_pipeline", app_id=app_id):
+    with _span("daily_pipeline", app_id=app_id):
         if not args.skip_analysis:
-            async with _span("analyze_new_reviews", app_id=app_id, max_reviews=args.analysis_max_reviews):
+            with _span("analyze_new_reviews", app_id=app_id, max_reviews=args.analysis_max_reviews):
                 analyzed_new = await analyze_reviews(
                     app_id=app_id,
                     min_date=None,
@@ -79,7 +79,7 @@ async def run_pipeline(args: argparse.Namespace) -> None:
             logger.info("Analysis (new / unanalyzed) complete processed=%s", analyzed_new)
 
             if not args.skip_stale_analysis_repair:
-                async with _span("analyze_stale_reviews", app_id=app_id, max_reviews=args.stale_analysis_max_reviews):
+                with _span("analyze_stale_reviews", app_id=app_id, max_reviews=args.stale_analysis_max_reviews):
                     stale_n = await analyze_reviews(
                         app_id=app_id,
                         min_date=None,
@@ -98,7 +98,7 @@ async def run_pipeline(args: argparse.Namespace) -> None:
             logger.info("Skipping analysis steps")
 
         if not args.skip_commentary:
-            async with _span("commentary", app_id=app_id):
+            with _span("commentary", app_id=app_id):
                 commentary = await run_commentary_generation(app_id=app_id)
             logger.info(
                 "Commentary complete generated=%s skipped=%s failed=%s jobs=%s",
@@ -111,7 +111,7 @@ async def run_pipeline(args: argparse.Namespace) -> None:
             logger.info("Skipping commentary step")
 
         if not args.skip_upsert:
-            async with _span("upsert_past_responses", app_id=app_id):
+            with _span("upsert_past_responses", app_id=app_id):
                 synced = run_upsert_past_responses(
                     app_id=app_id,
                     min_date=None,

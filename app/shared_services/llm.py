@@ -33,7 +33,7 @@ async_openai_client = instructor.patch(AsyncOpenAI(api_key=OPENAI_API_KEY), mode
 _embedding_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
 # Google Gemini — via OpenAI-compatible endpoint so logfire.instrument_openai() captures calls
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+GOOGLE_API_KEY = os.getenv("GEMINI_API_KEY")
 _GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
 
 if GOOGLE_API_KEY:
@@ -49,7 +49,7 @@ else:
     gemini_client = None
     async_gemini_client = None
 
-def call_llm_api(messages: List[Dict[str, str]], 
+def call_llm_api_openai_provider(messages: List[Dict[str, str]], 
                 model: str = "gpt-4o",
                 response_format: Optional[BaseModel] = None,
                 temperature: float = 0.3) -> Any:
@@ -319,8 +319,8 @@ async def call_llm_api_openrouter_provider_async(messages: List[Dict[str, str]],
         raise
     
     
-def call_llm_api_gemini_provider(messages: List[Dict[str, str]],
-                mode: str = "gemini-2.0-flash-lite",
+def call_llm_api(messages: List[Dict[str, str]],
+                mode: str = "gemini-3.0-flash-lite",
                 response_format: Optional[BaseModel] = None,
                 max_tokens: int = 8000,
                 temperature: float = 0.3,
@@ -371,7 +371,7 @@ def call_llm_api_gemini_provider(messages: List[Dict[str, str]],
         raise
     
     
-async def call_llm_api_gemini_provider_async(messages: List[Dict[str, str]],
+async def call_llm_api_async(messages: List[Dict[str, str]],
                 mode: str = "gemini-2.0-flash-lite",
                 response_format: Optional[BaseModel] = None,
                 max_tokens: int = 8000,
@@ -423,7 +423,7 @@ async def call_llm_api_gemini_provider_async(messages: List[Dict[str, str]],
         raise
     
 
-async def call_llm_api_async(messages: List[Dict[str, str]], 
+async def call_llm_api_openai_async_provider(messages: List[Dict[str, str]], 
                 model: str = "gpt-4o",
                 response_format: Optional[BaseModel] = None,
                 temperature: float = 0.3) -> Any:

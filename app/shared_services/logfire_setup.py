@@ -56,11 +56,18 @@ def configure(service_name: str = "xpchex-backend") -> bool:
         except Exception as exc:  # pragma: no cover
             logger.warning("logfire.instrument_openai failed: %s", exc)
 
-        # psycopg2 — SQL query tracing (pooled and non-pooled connections)
+        # psycopg / psycopg2 — SQL query tracing (method name varies by logfire version)
         try:
-            logfire.instrument_psycopg2()
+            if hasattr(logfire, "instrument_psycopg2"):
+                logfire.instrument_psycopg2()
+            elif hasattr(logfire, "instrument_psycopg"):
+                logfire.instrument_psycopg()
+            else:
+                logger.warning(
+                    "Logfire has no psycopg instrumentation method (expected instrument_psycopg2 or instrument_psycopg)"
+                )
         except Exception as exc:  # pragma: no cover
-            logger.warning("logfire.instrument_psycopg2 failed: %s", exc)
+            logger.warning("logfire psycopg instrumentation failed: %s", exc)
 
         # httpx — outbound HTTP calls (Google Play scraper, any external APIs)
         try:

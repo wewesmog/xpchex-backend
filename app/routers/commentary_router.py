@@ -61,7 +61,28 @@ def _fetch_latest_snapshot(
                 (app_id, slot_key, time_range_preset.value, window_start, window_end),
             )
             row = cur.fetchone()
-            return dict(row) if row else None
+            if row:
+                return dict(row)
+
+            # Fallback: if there is no exact-window snapshot for this preset,
+            # return the latest snapshot for the same app/slot/preset so
+            # commentary still renders while windows roll forward.
+            cur.execute(
+                """
+                SELECT
+                  id, app_id, slot_key, time_range_preset, window_start, window_end,
+                  commentary_text, max_chars, source_metrics_json, model_id, prompt_version, generated_at
+                FROM analytics_commentary_snapshots
+                WHERE app_id = %s
+                  AND slot_key = %s
+                  AND time_range_preset = %s
+                ORDER BY generated_at DESC
+                LIMIT 1
+                """,
+                (app_id, slot_key, time_range_preset.value),
+            )
+            fallback_row = cur.fetchone()
+            return dict(fallback_row) if fallback_row else None
 
 
 @router.get("/slots", status_code=status.HTTP_200_OK)
