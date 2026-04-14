@@ -1,8 +1,7 @@
-# main.py - Simplified for human-in-the-loop conversation handling
-
-from fastapi import FastAPI, APIRouter
+from fastapi import FastAPI
 import logging
 from dotenv import load_dotenv
+from app.shared_services.logger_setup import setup_logger
 
 # Logfire must be configured before routers are imported so that OpenAI /
 # psycopg2 patches are in place before any client is first used.
@@ -10,7 +9,19 @@ load_dotenv()
 from app.shared_services.logfire_setup import configure as _configure_logfire  # noqa: E402
 _configure_logfire(service_name="xpchex-api")
 
-from app.routers import test_router
+from app.routers import (
+    actions_router,
+    app_search_router,
+    commentary_router,
+    file_upload_router,
+    general,
+    issues_router,
+    overview_router,
+    positives_router,
+    reviewAnalysis,
+    reviews,
+    sentiments_router,
+)
 
 
 # import CORS
@@ -76,10 +87,21 @@ app.add_middleware(
 )
 
 # Include routers
-app.include_router(test_router.router)
+app.include_router(general.router)
+app.include_router(reviews.router)
+app.include_router(sentiments_router.router)
+app.include_router(issues_router.router)
+app.include_router(positives_router.router)
+app.include_router(actions_router.router)
+app.include_router(overview_router.router)
+app.include_router(file_upload_router.router)
+app.include_router(app_search_router.router)
+app.include_router(reviewAnalysis.router)
+app.include_router(commentary_router.router)
 
+@app.get("/")
 async def read_root():
-    return {"message": "Test Service is running!"}
+    return {"message": "XPchex backend is running!"}
 
 # @app.get("/health")
 # async def health_check():
